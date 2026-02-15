@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faArrowDown,
@@ -213,6 +213,49 @@ const getErrorMessage = async (response, fallback) => {
 
 const isWeekend = (day) => day?.isWeekend || false;
 
+const animateReorderedRows = (rowsMap, previousTopByIdRef) => {
+  const nextTopById = new Map();
+  rowsMap.forEach((element, id) => {
+    nextTopById.set(id, element.getBoundingClientRect().top);
+  });
+
+  nextTopById.forEach((nextTop, id) => {
+    const previousTop = previousTopByIdRef.current.get(id);
+    if (typeof previousTop !== 'number') {
+      return;
+    }
+
+    const deltaY = previousTop - nextTop;
+    if (Math.abs(deltaY) < 0.5) {
+      return;
+    }
+
+    const element = rowsMap.get(id);
+    if (!element) {
+      return;
+    }
+
+    element.style.transition = 'none';
+    element.style.transform = `translateY(${deltaY}px)`;
+    element.style.willChange = 'transform';
+
+    window.requestAnimationFrame(() => {
+      element.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
+      element.style.transform = 'translateY(0)';
+    });
+
+    const cleanup = () => {
+      element.style.transition = '';
+      element.style.transform = '';
+      element.style.willChange = '';
+      element.removeEventListener('transitionend', cleanup);
+    };
+    element.addEventListener('transitionend', cleanup);
+  });
+
+  previousTopByIdRef.current = nextTopById;
+};
+
 export default function PlanningApp() {
   const [projects, setProjects] = useState([]);
   const [selectedProjectId, setSelectedProjectId] = useState(null);
@@ -248,6 +291,10 @@ export default function PlanningApp() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState('');
+  const activityListRowRefs = useRef(new Map());
+  const scheduleRowRefs = useRef(new Map());
+  const previousActivityListTopByIdRef = useRef(new Map());
+  const previousScheduleTopByIdRef = useRef(new Map());
 
   const hasDesktopBridge = typeof window !== 'undefined' && window.electronAPI;
 
@@ -363,6 +410,47 @@ export default function PlanningApp() {
     }
     localStorage.setItem(SCHEDULE_ZOOM_KEY, scheduleZoom);
   }, [scheduleZoom]);
+
+  useLayoutEffect(() => {
+    const activityIds = board?.activities?.map((activity) => activity.id) || [];
+    if (activityIds.length === 0) {
+      previousActivityListTopByIdRef.current = new Map();
+      previousScheduleTopByIdRef.current = new Map();
+      return;
+    }
+
+    const activityListRows = new Map();
+    const scheduleRows = new Map();
+    for (const id of activityIds) {
+      const activityListElement = activityListRowRefs.current.get(id);
+      if (activityListElement) {
+        activityListRows.set(id, activityListElement);
+      }
+      const scheduleElement = scheduleRowRefs.current.get(id);
+      if (scheduleElement) {
+        scheduleRows.set(id, scheduleElement);
+      }
+    }
+
+    animateReorderedRows(activityListRows, previousActivityListTopByIdRef);
+    animateReorderedRows(scheduleRows, previousScheduleTopByIdRef);
+  }, [board?.activities]);
+
+  const bindActivityListRowRef = (activityId) => (element) => {
+    if (element) {
+      activityListRowRefs.current.set(activityId, element);
+      return;
+    }
+    activityListRowRefs.current.delete(activityId);
+  };
+
+  const bindScheduleRowRef = (activityId) => (element) => {
+    if (element) {
+      scheduleRowRefs.current.set(activityId, element);
+      return;
+    }
+    scheduleRowRefs.current.delete(activityId);
+  };
 
   const openCreateProjectModal = () => {
     setIsEditingProject(false);
@@ -868,9 +956,8 @@ export default function PlanningApp() {
                     acc[date] = index + 1;
                     return acc;
                   }, {});
-
                   return (
-                    <tr key={activity.id}>
+                    <tr key={activity.id} ref={bindScheduleRowRef(activity.id)}>
                       <th>
                         <span className="activity-label">
                           <span className="activity-color" style={{ backgroundColor: activity.color }} />
@@ -941,7 +1028,7 @@ export default function PlanningApp() {
         {board?.activities?.length ? (
           <ul className="activity-list">
             {board.activities.map((activity, index) => (
-              <li key={activity.id}>
+              <li key={activity.id} ref={bindActivityListRowRef(activity.id)}>
                 <span className="activity-label">
                   <span className="activity-color" style={{ backgroundColor: activity.color }} />
                   <span>{activity.name}</span>
