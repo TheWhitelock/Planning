@@ -4,6 +4,7 @@ import {
   faArrowDown,
   faArrowUp,
   faExpand,
+  faFileExcel,
   faGear,
   faPen,
   faPlus,
@@ -220,6 +221,48 @@ const getErrorMessage = async (response, fallback) => {
 };
 
 const isWeekend = (day) => day?.isWeekend || false;
+const exportSelectionStorageKey = (projectId) => `matthiance.export.deselected.${projectId}`;
+
+const sanitizeFilePart = (value) =>
+  String(value || '')
+    .trim()
+    .replace(/[<>:"/\\|?*\x00-\x1F]/g, '-')
+    .replace(/\s+/g, ' ')
+    .slice(0, 80);
+
+const normalizeHexColor = (value, fallback = '1B5C4F') => {
+  const raw = String(value || '')
+    .trim()
+    .replace(/^#/, '');
+  const normalized =
+    raw.length === 3
+      ? raw
+          .split('')
+          .map((part) => `${part}${part}`)
+          .join('')
+      : raw;
+  return /^[0-9A-Fa-f]{6}$/.test(normalized) ? normalized.toUpperCase() : fallback;
+};
+
+const channelToLinear = (channel) => {
+  const normalized = channel / 255;
+  if (normalized <= 0.03928) {
+    return normalized / 12.92;
+  }
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+};
+
+const getExcelContrastTextArgb = (hexColor) => {
+  const normalized = normalizeHexColor(hexColor);
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  const luminance =
+    0.2126 * channelToLinear(red) +
+    0.7152 * channelToLinear(green) +
+    0.0722 * channelToLinear(blue);
+  return luminance < 0.45 ? 'FFFFFFFF' : 'FF1F1A14';
+};
 
 const animateReorderedRows = (rowsMap, previousTopByIdRef) => {
   const nextTopById = new Map();
@@ -294,6 +337,8 @@ export default function PlanningApp() {
   const [showSettings, setShowSettings] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState('');
   const [showScheduleFullscreen, setShowScheduleFullscreen] = useState(false);
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportDeselectedActivityIds, setExportDeselectedActivityIds] = useState([]);
   const scheduleRowRefs = useRef(new Map());
   const fullscreenScheduleRowRefs = useRef(new Map());
   const previousScheduleTopByIdRef = useRef(new Map());
@@ -340,9 +385,7 @@ export default function PlanningApp() {
   const isDetailedZoom = scheduleZoom === 'detailed';
   const isOverviewZoom = scheduleZoom === 'overview';
   const dayHeaderMode = isDetailedZoom ? 'full' : isOverviewZoom ? 'day-only' : 'compact';
-  const fullscreenDayWidth = isOverviewZoom
-    ? Math.max(28, scheduleLayout.dayWidth - 6)
-    : scheduleLayout.dayWidth;
+  const fullscreenDayWidth = isOverviewZoom ? 24 : scheduleLayout.dayWidth;
 
   const withApi = async (requestFn) => {
     try {
@@ -424,7 +467,7 @@ export default function PlanningApp() {
     }
 
     const hasOpenModal =
-      showProjectModal || showActivityModal || showSettings || showScheduleFullscreen;
+      showProjectModal || showActivityModal || showSettings || showScheduleFullscreen || showExportModal;
     const previousOverflow = document.body.style.overflow;
 
     if (hasOpenModal) {
@@ -434,7 +477,7 @@ export default function PlanningApp() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [showProjectModal, showActivityModal, showSettings, showScheduleFullscreen]);
+  }, [showProjectModal, showActivityModal, showSettings, showScheduleFullscreen, showExportModal]);
 
   useEffect(() => {
     if (!showScheduleFullscreen) {
@@ -552,24 +595,65 @@ export default function PlanningApp() {
       : '/api/projects';
     const method = isEditingProject ? 'PUT' : 'POST';
 
-    const createdOrUpdated = await withApi(async () => {
-      const response = await fetch(apiUrl(endpoint), {
-        method,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(normalized.value)
+    const submitProject = async (confirmTrimOutOfRangeInstances = false) =>
+      withApi(async () => {
+        const payload =
+          method === 'PUT'
+            ? { ...normalized.value, confirmTrimOutOfRangeInstances }
+            : normalized.value;
+        const response = await fetch(apiUrl(endpoint), {
+          method,
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (response.status === 409 && body?.code === 'PROJECT_RANGE_PRUNE_REQUIRED') {
+            return {
+              requiresTrimConfirmation: true,
+              outOfRangeInstances: body.outOfRangeInstances || 0
+            };
+          }
+          throw new Error(body?.error || 'Unable to save project.');
+        }
+        return { project: body };
       });
-      if (!response.ok) {
-        throw new Error(await getErrorMessage(response, 'Unable to save project.'));
-      }
-      return response.json();
-    });
 
+    let saveResult = await submitProject(false);
+    if (!saveResult) {
+      return;
+    }
+
+    if (saveResult.requiresTrimConfirmation) {
+      const count = saveResult.outOfRangeInstances || 0;
+      const instanceLabel = count === 1 ? 'instance' : 'instances';
+      const confirmTrim = window.confirm(
+        `Shortening or shifting this project will remove ${count} activity ${instanceLabel} outside the new date range. Continue?`
+      );
+      if (!confirmTrim) {
+        setStatus('Project update canceled.');
+        return;
+      }
+
+      saveResult = await submitProject(true);
+      if (!saveResult || saveResult.requiresTrimConfirmation) {
+        return;
+      }
+    }
+
+    const createdOrUpdated = saveResult.project;
     if (!createdOrUpdated) {
       return;
     }
 
     setShowProjectModal(false);
-    setStatus(isEditingProject ? 'Project updated.' : 'Project created.');
+    if (isEditingProject && (createdOrUpdated.prunedInstances || 0) > 0) {
+      const count = createdOrUpdated.prunedInstances;
+      const instanceLabel = count === 1 ? 'instance' : 'instances';
+      setStatus(`Project updated. Removed ${count} out-of-range ${instanceLabel}.`);
+    } else {
+      setStatus(isEditingProject ? 'Project updated.' : 'Project created.');
+    }
     await loadProjects();
     setSelectedProjectId(createdOrUpdated.id);
     await loadBoard(createdOrUpdated.id);
@@ -801,6 +885,226 @@ export default function PlanningApp() {
     await loadBoard(selectedProjectId);
   };
 
+  const getCurrentExportDeselected = (projectId, activities) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return [];
+    }
+    const key = exportSelectionStorageKey(projectId);
+    const storedRaw = localStorage.getItem(key);
+    if (!storedRaw) {
+      return [];
+    }
+    const knownIds = new Set(activities.map((activity) => activity.id));
+    const parsed = JSON.parse(storedRaw);
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+    return parsed
+      .map((value) => Number(value))
+      .filter((value) => Number.isInteger(value) && knownIds.has(value));
+  };
+
+  const persistExportDeselected = (projectId, deselectedIds) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return;
+    }
+    localStorage.setItem(exportSelectionStorageKey(projectId), JSON.stringify(deselectedIds));
+  };
+
+  const openExportModal = () => {
+    if (!selectedProjectId || !board?.activities) {
+      return;
+    }
+    setExportDeselectedActivityIds(getCurrentExportDeselected(selectedProjectId, board.activities));
+    setShowExportModal(true);
+  };
+
+  const toggleExportActivity = (activityId, checked) => {
+    if (!selectedProjectId) {
+      return;
+    }
+    setExportDeselectedActivityIds((current) => {
+      const set = new Set(current);
+      if (checked) {
+        set.delete(activityId);
+      } else {
+        set.add(activityId);
+      }
+      const next = [...set];
+      persistExportDeselected(selectedProjectId, next);
+      return next;
+    });
+  };
+
+  const handleExportSchedule = async () => {
+    if (!board?.project) {
+      return;
+    }
+
+    const selectedActivities = board.activities.filter(
+      (activity) => !exportDeselectedActivityIds.includes(activity.id)
+    );
+    if (selectedActivities.length === 0) {
+      setStatus('Select at least one activity to export.');
+      return;
+    }
+
+    try {
+      const ExcelJS = await import('exceljs');
+      const workbook = new ExcelJS.Workbook();
+      const infoSheet = workbook.addWorksheet('Project Info');
+      const worksheet = workbook.addWorksheet('Schedule');
+
+      infoSheet.getColumn(1).width = 18;
+      infoSheet.getColumn(2).width = 42;
+      const infoRows = [
+        ['Project name', board.project.name],
+        ['Start date', board.project.startDate],
+        ['End date', board.project.endDate],
+        ['Length (days)', String(board.project.lengthDays)]
+      ];
+      infoRows.forEach(([label, value], index) => {
+        const row = infoSheet.getRow(index + 1);
+        row.getCell(1).value = label;
+        row.getCell(1).font = { bold: true };
+        row.getCell(2).value = value;
+      });
+
+      const firstColumnWidth = Math.max(18, Math.round((scheduleLayout.dayWidth || 120) / 8) + 10);
+      const dayColumnWidth = Math.max(4, Math.round((scheduleLayout.dayWidth || 120) / 8));
+      worksheet.getColumn(1).width = firstColumnWidth;
+      for (let index = 0; index < board.days.length; index += 1) {
+        worksheet.getColumn(index + 2).width = dayColumnWidth;
+      }
+
+      const headerRow1 = worksheet.getRow(1);
+      const headerRow2 = worksheet.getRow(2);
+      headerRow1.getCell(1).value = 'Activity';
+      worksheet.mergeCells(1, 1, 2, 1);
+
+      let cursor = 0;
+      while (cursor < board.days.length) {
+        const day = board.days[cursor];
+        const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'UTC'
+        });
+        let end = cursor;
+        while (
+          end + 1 < board.days.length &&
+          parseDateKey(board.days[end + 1].date)?.getUTCMonth() === parseDateKey(day.date)?.getUTCMonth() &&
+          parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
+            parseDateKey(day.date)?.getUTCFullYear()
+        ) {
+          end += 1;
+        }
+        const startCol = cursor + 2;
+        const endCol = end + 2;
+        headerRow1.getCell(startCol).value = monthLabel || '';
+        if (endCol > startCol) {
+          worksheet.mergeCells(1, startCol, 1, endCol);
+        }
+        cursor = end + 1;
+      }
+
+      board.days.forEach((day, index) => {
+        headerRow2.getCell(index + 2).value = formatDayHeader(day.date, dayHeaderMode);
+      });
+
+      const headerFill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF6E7D4' }
+      };
+      const weekendFill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF6EDE1' }
+      };
+      const border = {
+        top: { style: 'thin', color: { argb: 'e1e1e1' } },
+        left: { style: 'thin', color: { argb: 'e1e1e1' } },
+        bottom: { style: 'thin', color: { argb: 'e1e1e1' } },
+        right: { style: 'thin', color: { argb: 'e1e1e1' } }
+      };
+
+      for (let rowIndex = 1; rowIndex <= 2; rowIndex += 1) {
+        const row = worksheet.getRow(rowIndex);
+        for (let col = 1; col <= board.days.length + 1; col += 1) {
+          const cell = row.getCell(col);
+          cell.fill = headerFill;
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.font = { bold: true };
+        }
+      }
+
+      selectedActivities.forEach((activity, activityIndex) => {
+        const rowNumber = 3 + activityIndex;
+        const row = worksheet.getRow(rowNumber);
+        row.getCell(1).value = activity.name;
+        row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+
+        const map = board.instanceMap?.[String(activity.id)] || {};
+        const assignedDays = Object.keys(map).sort((left, right) => left.localeCompare(right));
+        const totalAssigned = assignedDays.length;
+        const positionByDay = assignedDays.reduce((acc, date, index) => {
+          acc[date] = index + 1;
+          return acc;
+        }, {});
+        const activityColor = normalizeHexColor(activity.color, '1B5C4F');
+        const fillColor = `FF${activityColor}`;
+        const textColor = getExcelContrastTextArgb(activityColor);
+
+        board.days.forEach((day, dayIndex) => {
+          const col = dayIndex + 2;
+          const cell = row.getCell(col);
+          const filled = Boolean(map[day.date]);
+
+          if (filled) {
+            const position = positionByDay[day.date];
+            cell.value = isOverviewZoom
+              ? ''
+              : isDetailedZoom
+                ? `${activity.name} ${position}/${totalAssigned}`
+                : `${position}/${totalAssigned}`;
+            cell.fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: fillColor }
+            };
+            cell.font = { bold: false, color: { argb: textColor } };
+          } else if (isWeekend(day)) {
+            cell.fill = weekendFill;
+            cell.border = border;
+          }
+          cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: isDetailedZoom };
+        });
+      });
+
+      worksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+      const buffer = await workbook.xlsx.writeBuffer();
+      const blob = new Blob([buffer], {
+        type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+      });
+      const now = new Date().toISOString().slice(0, 10);
+      const projectName = sanitizeFilePart(board.project.name) || 'project';
+      const filename = `${projectName}-schedule-${now}.xlsx`;
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      setShowExportModal(false);
+      setStatus(`Exported ${filename}`);
+    } catch (error) {
+      setStatus(error?.message || 'Unable to export schedule.');
+    }
+  };
+
   const handleOpenDataFolder = async () => {
     if (!hasDesktopBridge) {
       setSettingsStatus('Desktop tools are available in Electron only.');
@@ -838,8 +1142,7 @@ export default function PlanningApp() {
           <p className="eyebrow">His plan leads the way.</p>
           <h1>Matthiance</h1>
           <p className="subhead">
-            Build project timelines, define activities, and assign daily activity instances directly
-            in the planning grid.
+            Build project timelines, define activities, and export schedules to Excel.
           </p>
         </div>
         <div className="status-card">
@@ -877,14 +1180,34 @@ export default function PlanningApp() {
               <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
               New project
             </button>
-            <button type="button" className="ghost with-icon" onClick={openEditProjectModal}>
-              <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-              Edit project
-            </button>
-            <button type="button" className="ghost with-icon" onClick={handleDeleteProject}>
-              <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-              Delete project
-            </button>
+            <span
+              className="button-tooltip-wrap"
+              title={!selectedProject ? 'Select a project first.' : 'Edit selected project'}
+            >
+              <button
+                type="button"
+                className="ghost with-icon"
+                onClick={openEditProjectModal}
+                disabled={!selectedProject}
+              >
+                <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
+                Edit project
+              </button>
+            </span>
+            <span
+              className="button-tooltip-wrap"
+              title={!selectedProject ? 'Select a project first.' : 'Delete selected project'}
+            >
+              <button
+                type="button"
+                className="ghost with-icon"
+                onClick={handleDeleteProject}
+                disabled={!selectedProject}
+              >
+                <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
+                Delete project
+              </button>
+            </span>
           </div>
         </div>
         {projects.length === 0 ? (
@@ -927,6 +1250,26 @@ export default function PlanningApp() {
                 </button>
               ))}
             </div>
+            <span
+              className="button-tooltip-wrap"
+              title={
+                !selectedProjectId || !board?.project
+                  ? 'Select a project first.'
+                  : 'Open export options'
+              }
+            >
+              <button
+                type="button"
+                className="ghost with-icon"
+                onClick={openExportModal}
+                aria-label="Open export options"
+                title={!selectedProjectId || !board?.project ? undefined : 'Open export options'}
+                disabled={!selectedProjectId || !board?.project}
+              >
+                <FontAwesomeIcon icon={faFileExcel} className="icon" aria-hidden="true" />
+                Export
+              </button>
+            </span>
             <button
               type="button"
               className="ghost with-icon"
@@ -1207,6 +1550,26 @@ export default function PlanningApp() {
                     </button>
                   ))}
                 </div>
+                <span
+                  className="button-tooltip-wrap"
+                  title={
+                    !selectedProjectId || !board?.project
+                      ? 'Select a project first.'
+                      : 'Open export options'
+                  }
+                >
+                  <button
+                    type="button"
+                    className="ghost with-icon"
+                    onClick={openExportModal}
+                    aria-label="Open export options"
+                    title={!selectedProjectId || !board?.project ? undefined : 'Open export options'}
+                    disabled={!selectedProjectId || !board?.project}
+                  >
+                    <FontAwesomeIcon icon={faFileExcel} className="icon" aria-hidden="true" />
+                    Export
+                  </button>
+                </span>
                 <button
                   type="button"
                   className="ghost with-icon"
@@ -1389,6 +1752,68 @@ export default function PlanningApp() {
                 </table>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {showExportModal && (
+        <div className="modal-backdrop" onClick={() => setShowExportModal(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>Export</h2>
+                <p className="card-subtitle">
+                  Select which activities to include in the Excel export.
+                </p>
+              </div>
+              <button type="button" className="ghost with-icon" onClick={() => setShowExportModal(false)}>
+                <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
+              </button>
+            </div>
+            <div className="export-activity-list">
+              {(board?.activities || []).map((activity) => {
+                const checked = !exportDeselectedActivityIds.includes(activity.id);
+                return (
+                  <label
+                    key={`export-${activity.id}`}
+                    className={`export-activity-item ${checked ? 'is-selected' : ''}`}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={(event) => toggleExportActivity(activity.id, event.target.checked)}
+                    />
+                    <span className="activity-label">
+                      <span className="activity-color" style={{ backgroundColor: activity.color }} />
+                      <span>{activity.name}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            <div className="modal-actions">
+              <button type="button" className="ghost" onClick={() => setShowExportModal(false)}>
+                Cancel
+              </button>
+              <span
+                className="button-tooltip-wrap"
+                title={
+                  (board?.activities?.length || 0) - exportDeselectedActivityIds.length < 1
+                    ? 'Select at least one activity to export.'
+                    : 'Export selected activities to Excel'
+                }
+              >
+                <button
+                  type="button"
+                  className="primary with-icon"
+                  onClick={handleExportSchedule}
+                  disabled={(board?.activities?.length || 0) - exportDeselectedActivityIds.length < 1}
+                >
+                  <FontAwesomeIcon icon={faFileExcel} className="icon" aria-hidden="true" />
+                  Export .xlsx
+                </button>
+              </span>
+            </div>
           </div>
         </div>
       )}

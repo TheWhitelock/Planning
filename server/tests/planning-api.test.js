@@ -100,6 +100,49 @@ describe('planning API', () => {
     expect(updated.body.name).toBe('Gamma Updated');
     expect(updated.body.endDate).toBe('2026-04-05');
     expect(updated.body.lengthDays).toBe(5);
+    expect(updated.body.prunedInstances).toBe(0);
+  });
+
+  it('requires confirmation before trimming out-of-range instances on project update', async () => {
+    const project = await createProject({
+      name: 'Trim check',
+      startDate: '2026-09-01',
+      endDate: '2026-09-05'
+    });
+    const activity = await createActivity(project.body.id, {
+      name: 'Implementation',
+      color: '#1b5c4f'
+    });
+    await createInstance(project.body.id, activity.body.id, '2026-09-05');
+
+    const blocked = await request(app)
+      .put(`/api/projects/${project.body.id}`)
+      .send({
+        name: 'Trim check',
+        startDate: '2026-09-01',
+        endDate: '2026-09-03'
+      });
+
+    expect(blocked.status).toBe(409);
+    expect(blocked.body.code).toBe('PROJECT_RANGE_PRUNE_REQUIRED');
+    expect(blocked.body.outOfRangeInstances).toBe(1);
+
+    const confirmed = await request(app)
+      .put(`/api/projects/${project.body.id}`)
+      .send({
+        name: 'Trim check',
+        startDate: '2026-09-01',
+        endDate: '2026-09-03',
+        confirmTrimOutOfRangeInstances: true
+      });
+
+    expect(confirmed.status).toBe(200);
+    expect(confirmed.body.endDate).toBe('2026-09-03');
+    expect(confirmed.body.prunedInstances).toBe(1);
+
+    const board = await request(app).get(`/api/projects/${project.body.id}/board`);
+    expect(board.status).toBe(200);
+    expect(board.body.instances).toHaveLength(0);
   });
 
   it('deletes a project with cascade counts', async () => {

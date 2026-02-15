@@ -360,6 +360,40 @@ export const createApp = async ({ dbPath } = {}) => {
       return;
     }
 
+    const confirmTrimOutOfRangeInstances = Boolean(req.body?.confirmTrimOutOfRangeInstances);
+    const outOfRangeCountRows = db.all(
+      `SELECT COUNT(*) AS total
+       FROM activity_instances ai
+       JOIN activities a ON a.id = ai.activityId
+       WHERE a.projectId = ?
+         AND (ai.day < ? OR ai.day > ?)`,
+      [projectId, normalized.value.startDate, normalized.value.endDate]
+    );
+    const outOfRangeInstances = outOfRangeCountRows[0]?.total || 0;
+
+    if (outOfRangeInstances > 0 && !confirmTrimOutOfRangeInstances) {
+      res.status(409).json({
+        code: 'PROJECT_RANGE_PRUNE_REQUIRED',
+        outOfRangeInstances,
+        error: `Updating this project would remove ${outOfRangeInstances} activity instance(s) outside the new date range.`
+      });
+      return;
+    }
+
+    if (outOfRangeInstances > 0) {
+      await db.run(
+        `DELETE FROM activity_instances
+         WHERE id IN (
+           SELECT ai.id
+           FROM activity_instances ai
+           JOIN activities a ON a.id = ai.activityId
+           WHERE a.projectId = ?
+             AND (ai.day < ? OR ai.day > ?)
+         )`,
+        [projectId, normalized.value.startDate, normalized.value.endDate]
+      );
+    }
+
     await db.run(
       `UPDATE projects
        SET name = ?, startDate = ?, endDate = ?, lengthDays = ?, updatedAt = ?
@@ -374,7 +408,10 @@ export const createApp = async ({ dbPath } = {}) => {
       ]
     );
 
-    res.json(getProjectById(projectId));
+    res.json({
+      ...getProjectById(projectId),
+      prunedInstances: outOfRangeInstances
+    });
   });
 
   app.delete('/api/projects/:projectId', async (req, res) => {
