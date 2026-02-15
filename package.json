@@ -1,7 +1,7 @@
 {
   "name": "matthiance-planning",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.1.0",
   "description": "Local-first project planning with activities and daily scheduling.",
   "author": "Matthiance",
   "main": "electron/main.cjs",
