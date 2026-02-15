@@ -1,116 +1,82 @@
-﻿# Matthiance Planning Application
+# Matthiance Planning Application
 
-Local-first project planning with a daily activity grid.
-The app runs a React + Vite client with an Express API backed by SQLite (`sql.js`, file-backed), plus Electron desktop packaging.
+Local-first multi-project planning with a daily schedule grid.
 
-## Tech stack
-
+Tech stack:
 - Frontend: React + Vite
-- Backend: Node.js + Express (REST API)
-- Database: SQLite via `sql.js` (WASM + on-disk DB file)
+- Backend: Express + SQLite (`sql.js`, file-backed)
 - Desktop: Electron + electron-builder
 
 ## Prerequisites
 
 - Node.js 18+
 
-## Getting started
+## Development
 
-### 1) Install dependencies
+1. Install dependencies:
 
 ```bash
 npm install
 ```
 
-### 2) Configure server environment
-
-```bash
-cp server/.env.example server/.env
-```
-
-Default values:
-
-- `DB_PATH="./dev.db"`
-- `HOST="127.0.0.1"`
-- `PORT=3001`
-
-### 3) (Optional) Configure client API base
-
-```bash
-cp client/.env.example client/.env
-```
-
-Set `VITE_API_BASE` when loading the client from `file://` (for example in Electron).
-
-### 4) Run web app (client + server)
+2. Run web app (client + server):
 
 ```bash
 npm run dev
 ```
 
-- Client: <http://localhost:5173>
-- API: <http://127.0.0.1:3001>
+- Client: `http://localhost:5173`
+- API: `http://127.0.0.1:3001`
 
-## Desktop (Electron)
+## Desktop
 
-### Run desktop app in development
+Run Electron in development:
 
 ```bash
 npm run desktop:dev
 ```
 
-### Build Windows installer
+Build Windows installer:
 
 ```bash
 npm run electron:build
 ```
 
-Output is written to `dist-electron/` (for example `dist-electron/Matthiance-Setup-0.2.0.exe`).
+Build output is written to `dist-electron/` as `Matthiance-Setup-<version>.exe`.
 
-### Desktop data location
-
-In packaged Electron builds, the server DB is stored in Electron user data as:
-
-- `matthiance.db`
-
-Settings include:
-
-- `Open data folder`
-- `Export backup` (saves a `.db` copy)
+Packaged desktop data:
+- DB file: `matthiance.db`
+- Tools: `Open data folder`, `Export backup`
 
 ## Scripts
 
 From repo root:
+- `npm run dev`
+- `npm run desktop:dev`
+- `npm run build`
+- `npm run build:electron-client`
+- `npm run build:server-deps`
+- `npm run electron:build`
+- `npm run lint`
+- `npm run format`
 
-- `npm run dev` - run client + server
-- `npm run desktop:dev` - run client + server + Electron dev shell
-- `npm run build` - build client only
-- `npm run build:electron-client` - build client with Electron base path
-- `npm run build:server-deps` - install production-only server deps
-- `npm run electron:build` - build desktop installer
-- `npm run lint` - lint client
-- `npm run format` - format repo with Prettier
+Tests:
+- `npm run test --workspace client -- --run`
+- `npm run test --workspace server -- --run`
 
-Workspace tests:
-
-- `npm run test --workspace client`
-- `npm run test --workspace server`
-
-## REST API
+## API
 
 ### Health
-
 - `GET /api/health` -> `{ ok: true }`
 
 ### Projects
-
 - `GET /api/projects`
 - `POST /api/projects`
 - `GET /api/projects/:projectId`
 - `PUT /api/projects/:projectId`
 - `DELETE /api/projects/:projectId`
 
-Project payload:
+Project payload (`startDate` + (`endDate` or `lengthDays`)):
 
 ```json
 {
@@ -121,12 +87,20 @@ Project payload:
 }
 ```
 
-`startDate` + (`endDate` or `lengthDays`) is accepted; values are normalized and stored with inclusive day length.
+Rules:
+- Dates are stored as `YYYY-MM-DD` (inclusive day length).
+- `endDate` cannot be before `startDate`.
+- On project update, if the new date range would drop existing instances, the API returns:
+  - `409`
+  - `code: "PROJECT_RANGE_PRUNE_REQUIRED"`
+  - `outOfRangeInstances`
+- Retry the same update with `confirmTrimOutOfRangeInstances: true` to confirm pruning.
 
 ### Activities
-
 - `GET /api/projects/:projectId/activities`
 - `POST /api/projects/:projectId/activities`
+- `PUT /api/projects/:projectId/activities/:activityId`
+- `POST /api/projects/:projectId/activities/:activityId/reorder`
 - `DELETE /api/projects/:projectId/activities/:activityId`
 
 Activity payload:
@@ -138,8 +112,15 @@ Activity payload:
 }
 ```
 
-### Activity instances and board
+Reorder payload:
 
+```json
+{
+  "direction": "up"
+}
+```
+
+### Activity Instances and Board
 - `GET /api/projects/:projectId/board`
 - `POST /api/projects/:projectId/activities/:activityId/instances`
 - `DELETE /api/projects/:projectId/activities/:activityId/instances/:date`
@@ -153,16 +134,13 @@ Create instance payload:
 ```
 
 Rules:
-
-- Instance dates must be inside project range.
+- Instance date must be within project range.
 - One instance per activity/day.
-- Different activities can share the same day.
+- Different activities can share a day.
 
-## UI highlights
+## Notes
 
-- Multi-project list with create/edit/delete.
-- Activity manager with per-activity color.
-- Full project timeline (day columns) with horizontal scroll.
-- Weekend columns styled distinctly.
-- Direct cell assignment and deletion for activity instances.
-- Desktop utilities in Settings for local data handling.
+- Schedule export creates an `.xlsx` file with:
+  - `Project Info` sheet
+  - `Schedule` sheet
+- Export selection per project is persisted in local storage.

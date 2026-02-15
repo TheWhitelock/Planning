@@ -1,17 +1,20 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
-  faArrowDown,
-  faArrowUp,
   faExpand,
   faFileExcel,
   faGear,
   faPen,
   faPlus,
-  faTrash,
-  faXmark
+  faTrash
 } from '@fortawesome/free-solid-svg-icons';
 import './PlanningApp.css';
+import ScheduleGrid from './planning/ScheduleGrid.jsx';
+import ProjectModal from './planning/modals/ProjectModal.jsx';
+import ActivityModal from './planning/modals/ActivityModal.jsx';
+import ExportModal from './planning/modals/ExportModal.jsx';
+import SettingsModal from './planning/modals/SettingsModal.jsx';
+import ScheduleFullscreenModal from './planning/modals/ScheduleFullscreenModal.jsx';
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ZOOM_KEY = 'matthiance.scheduleZoom.v2';
@@ -1173,7 +1176,6 @@ export default function PlanningApp() {
         <div className="card-header">
           <div>
             <h2>Projects</h2>
-            {/* <p className="card-subtitle">Create, edit, and switch between planning projects.</p> */}
           </div>
           <div className="projects-actions">
             <button type="button" className="primary with-icon" onClick={openCreateProjectModal}>
@@ -1233,9 +1235,6 @@ export default function PlanningApp() {
         <div className="card-header">
           <div>
             <h2>Schedule</h2>
-            {/* <p className="card-subtitle">
-              Click cells to add one-day activity instances. Click assigned cells to remove them.
-            </p> */}
           </div>
           <div className="schedule-header-actions">
             <div className="zoom-toggle" role="group" aria-label="Schedule zoom level">
@@ -1292,611 +1291,92 @@ export default function PlanningApp() {
               '--weekend-width-factor': scheduleLayout.weekendFactor
             }}
           >
-            <table className="schedule-grid">
-              <colgroup>
-                <col className="activity-column-col" />
-                {board.days.map((day) => (
-                  <col
-                    key={`col-${day.date}`}
-                    className={`day-column-col ${isWeekend(day) ? 'is-weekend-col' : ''}`}
-                  />
-                ))}
-              </colgroup>
-              <thead>
-                <tr className="month-row">
-                  <th className="activity-column" rowSpan={2}>
-                    Activity
-                  </th>
-                  {monthGroups.map((group) => (
-                    <th key={group.key} className="month-group" colSpan={group.span}>
-                      <span className="month-label">{group.label}</span>
-                    </th>
-                  ))}
-                </tr>
-                <tr className="day-row">
-                  {board.days.map((day) => (
-                    <th
-                      key={day.date}
-                      className={isWeekend(day) ? 'is-weekend' : ''}
-                      title={formatDayTooltip(day.date)}
-                    >
-                      {formatDayHeader(day.date, dayHeaderMode)}
-                    </th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {board.activities.map((activity, index) => {
-                  const map = board.instanceMap?.[String(activity.id)] || {};
-                  const assignedDays = Object.keys(map).sort((left, right) =>
-                    left.localeCompare(right)
-                  );
-                  const totalAssigned = assignedDays.length;
-                  const positionByDay = assignedDays.reduce((acc, date, index) => {
-                    acc[date] = index + 1;
-                    return acc;
-                  }, {});
-                  return (
-                    <tr key={activity.id} ref={bindScheduleRowRef(activity.id)}>
-                      <th>
-                        <div className="schedule-activity-head">
-                          <span className="activity-label">
-                            <span className="activity-color" style={{ backgroundColor: activity.color }} />
-                            <span className="activity-name" title={activity.name}>
-                              {activity.name}
-                            </span>
-                          </span>
-                          <div className="schedule-row-actions">
-                            <button
-                              type="button"
-                              className="ghost with-icon event-action icon-only-action"
-                              onClick={() => handleMoveActivity(activity.id, 'up')}
-                              disabled={index === 0}
-                              aria-label="Move activity up"
-                              title="Move activity up"
-                            >
-                              <FontAwesomeIcon icon={faArrowUp} className="icon" aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost with-icon event-action icon-only-action"
-                              onClick={() => handleMoveActivity(activity.id, 'down')}
-                              disabled={index === board.activities.length - 1}
-                              aria-label="Move activity down"
-                              title="Move activity down"
-                            >
-                              <FontAwesomeIcon icon={faArrowDown} className="icon" aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost with-icon event-action icon-only-action"
-                              onClick={() => openEditActivityModal(activity)}
-                              aria-label="Edit activity"
-                              title="Edit activity"
-                            >
-                              <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost with-icon event-action icon-only-action"
-                              onClick={() => handleDeleteActivity(activity)}
-                              aria-label="Delete activity"
-                              title="Delete activity"
-                            >
-                              <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-                            </button>
-                          </div>
-                        </div>
-                      </th>
-                      {board.days.map((day) => {
-                        const filled = Boolean(map[day.date]);
-                        const position = filled ? positionByDay[day.date] : null;
-                        return (
-                          <td key={`${activity.id}-${day.date}`} className={isWeekend(day) ? 'is-weekend' : ''}>
-                            <button
-                              type="button"
-                              className={`instance-cell ${filled ? 'is-filled' : 'is-empty'} ${isDetailedZoom ? 'is-detailed' : ''}`}
-                              style={filled ? { '--cell-color': activity.color } : undefined}
-                              onClick={() => handleCellClick(activity.id, day.date, filled)}
-                              aria-label={`${activity.name} on ${day.date}`}
-                              title={filled ? 'Delete activity instance' : 'Add activity instance'}
-                            >
-                              {filled ? (
-                                isOverviewZoom ? (
-                                  ''
-                                ) : (
-                                isDetailedZoom ? (
-                                  <>
-                                    <span className="instance-cell-name">{activity.name}</span>
-                                    <span className="instance-cell-ratio">
-                                      {position}/{totalAssigned}
-                                    </span>
-                                  </>
-                                  ) : (
-                                    `${position}/${totalAssigned}`
-                                  )
-                                )
-                              ) : isOverviewZoom ? (
-                                '+'
-                              ) : (
-                                'Add'
-                              )}
-                            </button>
-                          </td>
-                        );
-                      })}
-                    </tr>
-                  );
-                })}
-                <tr className="new-activity-row">
-                  <th>
-                    <button
-                      type="button"
-                      className="ghost with-icon new-activity-inline"
-                      onClick={openCreateActivityModal}
-                      disabled={!selectedProjectId}
-                    >
-                      <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
-                      New activity
-                    </button>
-                  </th>
-                  {board.days.map((day) => (
-                    <td key={`new-activity-${day.date}`} className={isWeekend(day) ? 'is-weekend' : ''}>
-                      <span className="unassigned-cell" />
-                    </td>
-                  ))}
-                </tr>
-              </tbody>
-            </table>
+            <ScheduleGrid
+              board={board}
+              monthGroups={monthGroups}
+              dayHeaderMode={dayHeaderMode}
+              isDetailedZoom={isDetailedZoom}
+              isOverviewZoom={isOverviewZoom}
+              isWeekend={isWeekend}
+              formatDayHeader={formatDayHeader}
+              formatDayTooltip={formatDayTooltip}
+              onMoveActivity={handleMoveActivity}
+              onEditActivity={openEditActivityModal}
+              onDeleteActivity={handleDeleteActivity}
+              onCellClick={handleCellClick}
+              onCreateActivity={openCreateActivityModal}
+              selectedProjectId={selectedProjectId}
+              bindRowRef={bindScheduleRowRef}
+            />
           </div>
         )}
       </section>
 
-      {showProjectModal && (
-        <div className="modal-backdrop" onClick={() => setShowProjectModal(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>{isEditingProject ? 'Edit project' : 'Create project'}</h2>
-                <p className="card-subtitle">
-                  Set start and end date or start and length. The third value is derived.
-                </p>
-              </div>
-              <button
-                type="button"
-                className="ghost with-icon"
-                onClick={() => setShowProjectModal(false)}
-              >
-                <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
-              </button>
-            </div>
-            <form className="project-form" onSubmit={handleProjectSubmit}>
-              <label>
-                Project name
-                <input
-                  value={projectForm.name}
-                  onChange={(event) => handleProjectFieldChange('name', event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                Start date
-                <input
-                  type="date"
-                  value={projectForm.startDate}
-                  onChange={(event) => handleProjectFieldChange('startDate', event.target.value)}
-                  required
-                />
-              </label>
-              <label>
-                End date
-                <input
-                  type="date"
-                  value={projectForm.endDate}
-                  min={projectForm.startDate || undefined}
-                  onChange={(event) => handleProjectFieldChange('endDate', event.target.value)}
-                />
-              </label>
-              <label>
-                Length (days)
-                <input
-                  type="number"
-                  min="1"
-                  step="1"
-                  value={projectForm.lengthDays}
-                  onChange={(event) => handleProjectFieldChange('lengthDays', event.target.value)}
-                />
-              </label>
-              <div className="modal-actions">
-                <button type="button" className="ghost" onClick={() => setShowProjectModal(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary with-icon">
-                  <FontAwesomeIcon
-                    icon={isEditingProject ? faPen : faPlus}
-                    className="icon"
-                    aria-hidden="true"
-                  />
-                  {isEditingProject ? 'Save project' : 'Create project'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
+      <ProjectModal
+        show={showProjectModal}
+        isEditingProject={isEditingProject}
+        projectForm={projectForm}
+        onFieldChange={handleProjectFieldChange}
+        onClose={() => setShowProjectModal(false)}
+        onSubmit={handleProjectSubmit}
+      />
 
-      {showScheduleFullscreen && (
-        <div className="modal-backdrop schedule-fullscreen-backdrop" onClick={() => setShowScheduleFullscreen(false)}>
-          <div className="schedule-fullscreen-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>Schedule</h2>
-                {/* <p className="card-subtitle">
-                  {selectedProject
-                    ? `${selectedProject.name} · ${board?.days?.length || 0} days`
-                  : 'Project timeline'}
-                </p> */}
-              </div>
-              <div className="projects-actions">
-                <div className="zoom-toggle" role="group" aria-label="Schedule zoom level">
-                  {SCHEDULE_ZOOM_OPTIONS.map((option) => (
-                    <button
-                      key={`fullscreen-zoom-${option}`}
-                      type="button"
-                      className={`zoom-option ${scheduleZoom === option ? 'is-active' : ''}`}
-                      onClick={() => setScheduleZoom(option)}
-                    >
-                      {option === 'detailed' ? 'Detailed' : option === 'standard' ? 'Standard' : 'Overview'}
-                    </button>
-                  ))}
-                </div>
-                <span
-                  className="button-tooltip-wrap"
-                  title={
-                    !selectedProjectId || !board?.project
-                      ? 'Select a project first.'
-                      : 'Open export options'
-                  }
-                >
-                  <button
-                    type="button"
-                    className="ghost with-icon"
-                    onClick={openExportModal}
-                    aria-label="Open export options"
-                    title={!selectedProjectId || !board?.project ? undefined : 'Open export options'}
-                    disabled={!selectedProjectId || !board?.project}
-                  >
-                    <FontAwesomeIcon icon={faFileExcel} className="icon" aria-hidden="true" />
-                    Export
-                  </button>
-                </span>
-                <button
-                  type="button"
-                  className="ghost with-icon"
-                  onClick={() => setShowScheduleFullscreen(false)}
-                  aria-label="Close fullscreen schedule"
-                >
-                  <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
-                </button>
-              </div>
-            </div>
-            {!board?.project ? (
-              <p className="empty-state">Select a project to view its timeline.</p>
-            ) : (
-              <div
-                className={`schedule-scroll fullscreen ${isOverviewZoom ? 'mode-overview' : ''}`}
-                style={{
-                  '--day-col-width': `${fullscreenDayWidth}px`,
-                  '--weekend-width-factor': scheduleLayout.weekendFactor
-                }}
-              >
-                <table className="schedule-grid">
-                  <colgroup>
-                    <col className="activity-column-col" />
-                    {board.days.map((day) => (
-                      <col
-                        key={`fullscreen-col-${day.date}`}
-                        className={`day-column-col ${isWeekend(day) ? 'is-weekend-col' : ''}`}
-                      />
-                    ))}
-                  </colgroup>
-                  <thead>
-                    <tr className="month-row">
-                      <th className="activity-column" rowSpan={2}>
-                        Activity
-                      </th>
-                      {monthGroups.map((group) => (
-                        <th key={`fullscreen-${group.key}`} className="month-group" colSpan={group.span}>
-                          <span className="month-label">{group.label}</span>
-                        </th>
-                      ))}
-                    </tr>
-                    <tr className="day-row">
-                      {board.days.map((day) => (
-                        <th
-                          key={`fullscreen-${day.date}`}
-                          className={isWeekend(day) ? 'is-weekend' : ''}
-                          title={formatDayTooltip(day.date)}
-                        >
-                          {formatDayHeader(day.date, dayHeaderMode)}
-                        </th>
-                      ))}
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {board.activities.map((activity, index) => {
-                      const map = board.instanceMap?.[String(activity.id)] || {};
-                      const assignedDays = Object.keys(map).sort((left, right) =>
-                        left.localeCompare(right)
-                      );
-                      const totalAssigned = assignedDays.length;
-                      const positionByDay = assignedDays.reduce((acc, date, index) => {
-                        acc[date] = index + 1;
-                        return acc;
-                      }, {});
+      <ScheduleFullscreenModal
+        show={showScheduleFullscreen}
+        onClose={() => setShowScheduleFullscreen(false)}
+        zoomOptions={SCHEDULE_ZOOM_OPTIONS}
+        scheduleZoom={scheduleZoom}
+        onScheduleZoomChange={setScheduleZoom}
+        selectedProjectId={selectedProjectId}
+        board={board}
+        onOpenExport={openExportModal}
+        isOverviewZoom={isOverviewZoom}
+        fullscreenDayWidth={fullscreenDayWidth}
+        weekendWidthFactor={scheduleLayout.weekendFactor}
+        monthGroups={monthGroups}
+        dayHeaderMode={dayHeaderMode}
+        isDetailedZoom={isDetailedZoom}
+        isWeekend={isWeekend}
+        formatDayHeader={formatDayHeader}
+        formatDayTooltip={formatDayTooltip}
+        onMoveActivity={handleMoveActivity}
+        onEditActivity={openEditActivityModal}
+        onDeleteActivity={handleDeleteActivity}
+        onCellClick={handleCellClick}
+        onCreateActivity={openCreateActivityModal}
+        bindRowRef={bindFullscreenScheduleRowRef}
+      />
 
-                      return (
-                        <tr key={`fullscreen-${activity.id}`} ref={bindFullscreenScheduleRowRef(activity.id)}>
-                          <th>
-                            <div className="schedule-activity-head">
-                              <span className="activity-label">
-                                <span className="activity-color" style={{ backgroundColor: activity.color }} />
-                                <span className="activity-name" title={activity.name}>
-                                  {activity.name}
-                                </span>
-                              </span>
-                              <div className="schedule-row-actions">
-                                <button
-                                  type="button"
-                                  className="ghost with-icon event-action icon-only-action"
-                                  onClick={() => handleMoveActivity(activity.id, 'up')}
-                                  disabled={index === 0}
-                                  aria-label="Move activity up"
-                                  title="Move activity up"
-                                >
-                                  <FontAwesomeIcon icon={faArrowUp} className="icon" aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ghost with-icon event-action icon-only-action"
-                                  onClick={() => handleMoveActivity(activity.id, 'down')}
-                                  disabled={index === board.activities.length - 1}
-                                  aria-label="Move activity down"
-                                  title="Move activity down"
-                                >
-                                  <FontAwesomeIcon icon={faArrowDown} className="icon" aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ghost with-icon event-action icon-only-action"
-                                  onClick={() => openEditActivityModal(activity)}
-                                  aria-label="Edit activity"
-                                  title="Edit activity"
-                                >
-                                  <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-                                </button>
-                                <button
-                                  type="button"
-                                  className="ghost with-icon event-action icon-only-action"
-                                  onClick={() => handleDeleteActivity(activity)}
-                                  aria-label="Delete activity"
-                                  title="Delete activity"
-                                >
-                                  <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-                                </button>
-                              </div>
-                            </div>
-                          </th>
-                          {board.days.map((day) => {
-                            const filled = Boolean(map[day.date]);
-                            const position = filled ? positionByDay[day.date] : null;
-                            return (
-                              <td
-                                key={`fullscreen-${activity.id}-${day.date}`}
-                                className={isWeekend(day) ? 'is-weekend' : ''}
-                              >
-                                <button
-                                  type="button"
-                                  className={`instance-cell ${filled ? 'is-filled' : 'is-empty'} ${isDetailedZoom ? 'is-detailed' : ''}`}
-                                  style={filled ? { '--cell-color': activity.color } : undefined}
-                                  onClick={() => handleCellClick(activity.id, day.date, filled)}
-                                  aria-label={`${activity.name} on ${day.date}`}
-                                  title={filled ? 'Delete activity instance' : 'Add activity instance'}
-                                >
-                                  {filled ? (
-                                    isOverviewZoom ? (
-                                      ''
-                                    ) : (
-                                    isDetailedZoom ? (
-                                      <>
-                                        <span className="instance-cell-name">{activity.name}</span>
-                                        <span className="instance-cell-ratio">
-                                          {position}/{totalAssigned}
-                                        </span>
-                                      </>
-                                    ) : (
-                                      `${position}/${totalAssigned}`
-                                    )
-                                    )
-                                  ) : isOverviewZoom ? (
-                                    '+'
-                                  ) : (
-                                    'Add'
-                                  )}
-                                </button>
-                              </td>
-                            );
-                          })}
-                        </tr>
-                      );
-                    })}
-                    <tr className="new-activity-row">
-                      <th>
-                        <button
-                          type="button"
-                          className="ghost with-icon new-activity-inline"
-                          onClick={openCreateActivityModal}
-                          disabled={!selectedProjectId}
-                        >
-                          <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
-                          New activity
-                        </button>
-                      </th>
-                      {board.days.map((day) => (
-                        <td key={`fullscreen-new-activity-${day.date}`} className={isWeekend(day) ? 'is-weekend' : ''}>
-                          <span className="unassigned-cell" />
-                        </td>
-                      ))}
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+      <ExportModal
+        show={showExportModal}
+        board={board}
+        exportDeselectedActivityIds={exportDeselectedActivityIds}
+        onToggleActivity={toggleExportActivity}
+        onClose={() => setShowExportModal(false)}
+        onExport={handleExportSchedule}
+      />
 
-      {showExportModal && (
-        <div className="modal-backdrop" onClick={() => setShowExportModal(false)}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>Export</h2>
-                <p className="card-subtitle">
-                  Select which activities to include in the Excel export.
-                </p>
-              </div>
-              <button type="button" className="ghost with-icon" onClick={() => setShowExportModal(false)}>
-                <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
-              </button>
-            </div>
-            <div className="export-activity-list">
-              {(board?.activities || []).map((activity) => {
-                const checked = !exportDeselectedActivityIds.includes(activity.id);
-                return (
-                  <label
-                    key={`export-${activity.id}`}
-                    className={`export-activity-item ${checked ? 'is-selected' : ''}`}
-                  >
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={(event) => toggleExportActivity(activity.id, event.target.checked)}
-                    />
-                    <span className="activity-label">
-                      <span className="activity-color" style={{ backgroundColor: activity.color }} />
-                      <span>{activity.name}</span>
-                    </span>
-                  </label>
-                );
-              })}
-            </div>
-            <div className="modal-actions">
-              <button type="button" className="ghost" onClick={() => setShowExportModal(false)}>
-                Cancel
-              </button>
-              <span
-                className="button-tooltip-wrap"
-                title={
-                  (board?.activities?.length || 0) - exportDeselectedActivityIds.length < 1
-                    ? 'Select at least one activity to export.'
-                    : 'Export selected activities to Excel'
-                }
-              >
-                <button
-                  type="button"
-                  className="primary with-icon"
-                  onClick={handleExportSchedule}
-                  disabled={(board?.activities?.length || 0) - exportDeselectedActivityIds.length < 1}
-                >
-                  <FontAwesomeIcon icon={faFileExcel} className="icon" aria-hidden="true" />
-                  Export .xlsx
-                </button>
-              </span>
-            </div>
-          </div>
-        </div>
-      )}
+      <ActivityModal
+        show={showActivityModal}
+        isEditingActivity={isEditingActivity}
+        activityForm={activityForm}
+        onChange={(field, value) =>
+          setActivityForm((current) => ({
+            ...current,
+            [field]: value
+          }))
+        }
+        onClose={closeActivityModal}
+        onSubmit={handleActivitySubmit}
+      />
 
-      {showActivityModal && (
-        <div className="modal-backdrop" onClick={closeActivityModal}>
-          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>{isEditingActivity ? 'Edit activity' : 'Create activity'}</h2>
-                <p className="card-subtitle">
-                  Set a unique activity name and color for the selected project.
-                </p>
-              </div>
-              <button type="button" className="ghost with-icon" onClick={closeActivityModal}>
-                <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
-              </button>
-            </div>
-            <form className="project-form" onSubmit={handleActivitySubmit}>
-              <label>
-                Activity name
-                <input
-                  value={activityForm.name}
-                  onChange={(event) =>
-                    setActivityForm((current) => ({ ...current, name: event.target.value }))
-                  }
-                  placeholder="Enter activity name..."
-                  required
-                />
-              </label>
-              <div className="field-group">
-                <span className="field-label">Color</span>
-                <input
-                  type="color"
-                  value={activityForm.color}
-                  onChange={(event) =>
-                    setActivityForm((current) => ({ ...current, color: event.target.value }))
-                  }
-                  required
-                />
-              </div>
-              <div className="modal-actions">
-                <button type="button" className="ghost" onClick={closeActivityModal}>
-                  Cancel
-                </button>
-                <button type="submit" className="primary with-icon">
-                  <FontAwesomeIcon
-                    icon={isEditingActivity ? faPen : faPlus}
-                    className="icon"
-                    aria-hidden="true"
-                  />
-                  {isEditingActivity ? 'Save activity' : 'Create activity'}
-                </button>
-              </div>
-            </form>
-          </div>
-        </div>
-      )}
-
-      {showSettings && (
-        <div className="modal-backdrop" onClick={() => setShowSettings(false)}>
-          <div className="settings-popover" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
-              <div>
-                <h2>Desktop tools</h2>
-                <p className="card-subtitle">Open local data folder and export a backup.</p>
-              </div>
-              <button type="button" className="ghost with-icon" onClick={() => setShowSettings(false)}>
-                <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
-              </button>
-            </div>
-            <div className="settings-actions">
-              <button type="button" className="ghost" onClick={handleOpenDataFolder}>
-                Open data folder
-              </button>
-              <button type="button" className="primary" onClick={handleExportBackup}>
-                Export backup
-              </button>
-            </div>
-            {settingsStatus && <p className="settings-status">{settingsStatus}</p>}
-          </div>
-        </div>
-      )}
+      <SettingsModal
+        show={showSettings}
+        settingsStatus={settingsStatus}
+        onClose={() => setShowSettings(false)}
+        onOpenDataFolder={handleOpenDataFolder}
+        onExportBackup={handleExportBackup}
+      />
     </div>
   );
 }
