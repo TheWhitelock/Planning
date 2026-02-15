@@ -1,0 +1,76 @@
+{
+  "name": "matthiance-planning",
+  "private": true,
+  "version": "0.2.0",
+  "description": "Local-first project planning with activities and daily scheduling.",
+  "author": "Matthiance",
+  "main": "electron/main.cjs",
+  "workspaces": [
+    "client",
+    "server"
+  ],
+  "scripts": {
+    "dev": "concurrently \"npm:dev --workspace client\" \"npm:dev --workspace server\"",
+    "desktop:dev": "concurrently \"npm:dev --workspace client\" \"npm:dev --workspace server\" \"npm:electron:dev\"",
+    "electron:dev": "wait-on http://localhost:5173 && wait-on http://127.0.0.1:3001/api/health && cross-env ELECTRON_START_URL=http://localhost:5173 electron electron/main.cjs",
+    "build": "npm run build --workspace client",
+    "build:electron-client": "npm run build --workspace client -- --mode electron",
+    "build:server-deps": "npm install --omit=dev --no-workspaces --prefix server",
+    "electron:build": "npm run build:electron-client && npm run build:server-deps && electron-builder",
+    "lint": "npm run lint --workspace client",
+    "format": "prettier --write ."
+  },
+  "dependencies": {
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "sql.js": "^1.10.3"
+  },
+  "build": {
+    "appId": "com.matthiance.app",
+    "productName": "Matthiance",
+    "artifactName": "Matthiance-Setup-${version}.${ext}",
+    "copyright": "Copyright (c) 2026",
+    "directories": {
+      "output": "dist-electron"
+    },
+    "files": [
+      "electron/**",
+      "client/dist/**",
+      "server/**",
+      "node_modules/sql.js/**",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "server/node_modules",
+        "to": "app.asar.unpacked/server/node_modules"
+      }
+    ],
+    "asar": true,
+    "asarUnpack": [
+      "server/**",
+      "server/node_modules/**",
+      "node_modules/sql.js/**"
+    ],
+    "win": {
+      "target": "nsis",
+      "publisherName": "Matthiance"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.3",
+    "prettier": "^3.2.5",
+    "wait-on": "^7.2.0"
+  }
+}
+
+

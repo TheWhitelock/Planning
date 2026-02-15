@@ -1,0 +1,22 @@
+{
+    "name":  "matthiance-server",
+    "private":  true,
+    "version": "0.2.0",
+    "type":  "module",
+    "scripts":  {
+    "dev":  "node --watch src/index.js",
+    "start":  "node src/index.js",
+    "test":  "vitest"
+},
+    "dependencies":  {
+                         "express":  "^4.19.2",
+                         "dotenv":  "^16.4.5",
+                         "cors":  "^2.8.5",
+                         "sql.js": "^1.10.3"
+                     },
+    "devDependencies":  {
+                            "supertest":  "^7.1.1",
+                            "vitest":  "^1.6.0"
+                        }
+}
+
