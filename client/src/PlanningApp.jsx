@@ -3,6 +3,7 @@ import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
   faArrowDown,
   faArrowUp,
+  faExpand,
   faGear,
   faPen,
   faPlus,
@@ -291,6 +292,7 @@ export default function PlanningApp() {
 
   const [showSettings, setShowSettings] = useState(false);
   const [settingsStatus, setSettingsStatus] = useState('');
+  const [showScheduleFullscreen, setShowScheduleFullscreen] = useState(false);
   const activityListRowRefs = useRef(new Map());
   const scheduleRowRefs = useRef(new Map());
   const previousActivityListTopByIdRef = useRef(new Map());
@@ -410,6 +412,39 @@ export default function PlanningApp() {
     }
     localStorage.setItem(SCHEDULE_ZOOM_KEY, scheduleZoom);
   }, [scheduleZoom]);
+
+  useEffect(() => {
+    if (typeof document === 'undefined') {
+      return;
+    }
+
+    const hasOpenModal =
+      showProjectModal || showActivityModal || showSettings || showScheduleFullscreen;
+    const previousOverflow = document.body.style.overflow;
+
+    if (hasOpenModal) {
+      document.body.style.overflow = 'hidden';
+    }
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [showProjectModal, showActivityModal, showSettings, showScheduleFullscreen]);
+
+  useEffect(() => {
+    if (!showScheduleFullscreen) {
+      return;
+    }
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setShowScheduleFullscreen(false);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [showScheduleFullscreen]);
 
   useLayoutEffect(() => {
     const activityIds = board?.activities?.map((activity) => activity.id) || [];
@@ -813,10 +848,6 @@ export default function PlanningApp() {
             {selectedProject ? `Selected: ${selectedProject.name}` : 'No project selected'}
           </p>
           <div className="status-actions">
-            <button type="button" className="primary with-icon" onClick={openCreateProjectModal}>
-              <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
-              New project
-            </button>
             <button
               type="button"
               className="ghost with-icon"
@@ -837,6 +868,10 @@ export default function PlanningApp() {
             <p className="card-subtitle">Create, edit, and switch between planning projects.</p>
           </div>
           <div className="projects-actions">
+            <button type="button" className="primary with-icon" onClick={openCreateProjectModal}>
+              <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
+              New project
+            </button>
             <button type="button" className="ghost with-icon" onClick={openEditProjectModal}>
               <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
               Edit project
@@ -887,7 +922,16 @@ export default function PlanningApp() {
                 </button>
               ))}
             </div>
-            <span className="count">{board?.days?.length || 0} days</span>
+            <button
+              type="button"
+              className="ghost with-icon"
+              onClick={() => setShowScheduleFullscreen(true)}
+              aria-label="Open full screen schedule"
+              title="Open full screen schedule"
+            >
+              <FontAwesomeIcon icon={faExpand} className="icon" aria-hidden="true" />
+              Full screen
+            </button>
           </div>
         </div>
         {!board?.project ? (
@@ -1150,6 +1194,160 @@ export default function PlanningApp() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {showScheduleFullscreen && (
+        <div className="modal-backdrop schedule-fullscreen-backdrop" onClick={() => setShowScheduleFullscreen(false)}>
+          <div className="schedule-fullscreen-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>Schedule</h2>
+                {/* <p className="card-subtitle">
+                  {selectedProject
+                    ? `${selectedProject.name} · ${board?.days?.length || 0} days`
+                  : 'Project timeline'}
+                </p> */}
+              </div>
+              <div className="projects-actions">
+                <div className="zoom-toggle" role="group" aria-label="Schedule zoom level">
+                  {SCHEDULE_ZOOM_OPTIONS.map((option) => (
+                    <button
+                      key={`fullscreen-zoom-${option}`}
+                      type="button"
+                      className={`zoom-option ${scheduleZoom === option ? 'is-active' : ''}`}
+                      onClick={() => setScheduleZoom(option)}
+                    >
+                      {option === 'detailed' ? 'Detailed' : 'Overview'}
+                    </button>
+                  ))}
+                </div>
+                <button
+                  type="button"
+                  className="ghost with-icon"
+                  onClick={() => setShowScheduleFullscreen(false)}
+                  aria-label="Close fullscreen schedule"
+                >
+                  <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
+                </button>
+              </div>
+            </div>
+            {!board?.project ? (
+              <p className="empty-state">Select a project to view its timeline.</p>
+            ) : (
+              <div
+                className="schedule-scroll fullscreen"
+                style={{
+                  '--day-col-width': `${scheduleLayout.dayWidth}px`,
+                  '--weekend-width-factor': scheduleLayout.weekendFactor
+                }}
+              >
+                <table className="schedule-grid">
+                  <colgroup>
+                    <col className="activity-column-col" />
+                    {board.days.map((day) => (
+                      <col
+                        key={`fullscreen-col-${day.date}`}
+                        className={`day-column-col ${isWeekend(day) ? 'is-weekend-col' : ''}`}
+                      />
+                    ))}
+                  </colgroup>
+                  <thead>
+                    <tr className="month-row">
+                      <th className="activity-column" rowSpan={2}>
+                        Activity
+                      </th>
+                      {monthGroups.map((group) => (
+                        <th key={`fullscreen-${group.key}`} className="month-group" colSpan={group.span}>
+                          <span className="month-label">{group.label}</span>
+                        </th>
+                      ))}
+                    </tr>
+                    <tr className="day-row">
+                      {board.days.map((day) => (
+                        <th
+                          key={`fullscreen-${day.date}`}
+                          className={isWeekend(day) ? 'is-weekend' : ''}
+                          title={formatDayTooltip(day.date)}
+                        >
+                          {formatDayHeader(day.date, useCompactHeaders ? 'compact' : 'full')}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {board.activities.length === 0 && (
+                      <tr>
+                        <th>
+                          <span className="activity-label activity-label-muted">Unassigned</span>
+                        </th>
+                        {board.days.map((day) => (
+                          <td key={`fullscreen-unassigned-${day.date}`} className={isWeekend(day) ? 'is-weekend' : ''}>
+                            <span className="unassigned-cell" />
+                          </td>
+                        ))}
+                      </tr>
+                    )}
+                    {board.activities.map((activity) => {
+                      const map = board.instanceMap?.[String(activity.id)] || {};
+                      const assignedDays = Object.keys(map).sort((left, right) =>
+                        left.localeCompare(right)
+                      );
+                      const totalAssigned = assignedDays.length;
+                      const positionByDay = assignedDays.reduce((acc, date, index) => {
+                        acc[date] = index + 1;
+                        return acc;
+                      }, {});
+
+                      return (
+                        <tr key={`fullscreen-${activity.id}`}>
+                          <th>
+                            <span className="activity-label">
+                              <span className="activity-color" style={{ backgroundColor: activity.color }} />
+                              <span>{activity.name}</span>
+                            </span>
+                          </th>
+                          {board.days.map((day) => {
+                            const filled = Boolean(map[day.date]);
+                            const position = filled ? positionByDay[day.date] : null;
+                            return (
+                              <td
+                                key={`fullscreen-${activity.id}-${day.date}`}
+                                className={isWeekend(day) ? 'is-weekend' : ''}
+                              >
+                                <button
+                                  type="button"
+                                  className={`instance-cell ${filled ? 'is-filled' : 'is-empty'} ${isDetailedZoom ? 'is-detailed' : ''}`}
+                                  style={filled ? { '--cell-color': activity.color } : undefined}
+                                  onClick={() => handleCellClick(activity.id, day.date, filled)}
+                                  aria-label={`${activity.name} on ${day.date}`}
+                                >
+                                  {filled ? (
+                                    isDetailedZoom ? (
+                                      <>
+                                        <span className="instance-cell-name">{activity.name}</span>
+                                        <span className="instance-cell-ratio">
+                                          {position}/{totalAssigned}
+                                        </span>
+                                      </>
+                                    ) : (
+                                      `${position}/${totalAssigned}`
+                                    )
+                                  ) : (
+                                    'Add'
+                                  )}
+                                </button>
+                              </td>
+                            );
+                          })}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </div>
         </div>
       )}
