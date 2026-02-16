@@ -1,10 +1,14 @@
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import { faFileExcel, faXmark } from '@fortawesome/free-solid-svg-icons';
 import ScheduleGrid from '../ScheduleGrid.jsx';
+import ScheduleLegend from '../ScheduleLegend.jsx';
 
 export default function ScheduleFullscreenModal({
   show,
   onClose,
+  modeOptions,
+  scheduleMode,
+  onScheduleModeChange,
   zoomOptions,
   scheduleZoom,
   onScheduleZoomChange,
@@ -25,6 +29,12 @@ export default function ScheduleFullscreenModal({
   onDeleteActivity,
   onCellClick,
   onCreateActivity,
+  onMoveSubProject,
+  onEditSubProject,
+  onDeleteSubProject,
+  onCreateSubProject,
+  onSubProjectAddInstance,
+  onSubProjectDeleteInstance,
   bindRowRef
 }) {
   if (!show) {
@@ -39,6 +49,18 @@ export default function ScheduleFullscreenModal({
             <h2>Schedule</h2>
           </div>
           <div className="projects-actions">
+            <div className="mode-toggle" role="group" aria-label="Schedule mode">
+              {modeOptions.map((option) => (
+                <button
+                  key={`fullscreen-mode-${option}`}
+                  type="button"
+                  className={`mode-option ${scheduleMode === option ? 'is-active' : ''}`}
+                  onClick={() => onScheduleModeChange(option)}
+                >
+                  {option === 'activity' ? 'Activity mode' : 'Sub-project mode'}
+                </button>
+              ))}
+            </div>
             <div className="zoom-toggle" role="group" aria-label="Schedule zoom level">
               {zoomOptions.map((option) => (
                 <button
@@ -84,31 +106,41 @@ export default function ScheduleFullscreenModal({
         {!board?.project ? (
           <p className="empty-state">Select a project to view its timeline.</p>
         ) : (
-          <div
-            className={`schedule-scroll fullscreen ${isOverviewZoom ? 'mode-overview' : ''}`}
-            style={{
-              '--day-col-width': `${fullscreenDayWidth}px`,
-              '--weekend-width-factor': weekendWidthFactor
-            }}
-          >
-            <ScheduleGrid
-              board={board}
-              keyPrefix="fullscreen-"
-              monthGroups={monthGroups}
-              dayHeaderMode={dayHeaderMode}
-              isDetailedZoom={isDetailedZoom}
-              isOverviewZoom={isOverviewZoom}
-              isWeekend={isWeekend}
-              formatDayHeader={formatDayHeader}
-              formatDayTooltip={formatDayTooltip}
-              onMoveActivity={onMoveActivity}
-              onEditActivity={onEditActivity}
-              onDeleteActivity={onDeleteActivity}
-              onCellClick={onCellClick}
-              onCreateActivity={onCreateActivity}
-              selectedProjectId={selectedProjectId}
-              bindRowRef={bindRowRef}
-            />
+          <div className="schedule-pane is-fullscreen">
+            <div
+              className={`schedule-scroll fullscreen ${isOverviewZoom ? 'mode-overview' : ''}`}
+              style={{
+                '--day-col-width': `${fullscreenDayWidth}px`,
+                '--weekend-width-factor': weekendWidthFactor
+              }}
+            >
+              <ScheduleGrid
+                board={board}
+                scheduleMode={scheduleMode}
+                keyPrefix="fullscreen-"
+                monthGroups={monthGroups}
+                dayHeaderMode={dayHeaderMode}
+                isDetailedZoom={isDetailedZoom}
+                isOverviewZoom={isOverviewZoom}
+                isWeekend={isWeekend}
+                formatDayHeader={formatDayHeader}
+                formatDayTooltip={formatDayTooltip}
+                onMoveActivity={onMoveActivity}
+                onEditActivity={onEditActivity}
+                onDeleteActivity={onDeleteActivity}
+                onCellClick={onCellClick}
+                onCreateActivity={onCreateActivity}
+                onMoveSubProject={onMoveSubProject}
+                onEditSubProject={onEditSubProject}
+                onDeleteSubProject={onDeleteSubProject}
+                onCreateSubProject={onCreateSubProject}
+                onSubProjectAddInstance={onSubProjectAddInstance}
+                onSubProjectDeleteInstance={onSubProjectDeleteInstance}
+                selectedProjectId={selectedProjectId}
+                bindRowRef={bindRowRef}
+              />
+            </div>
+            <ScheduleLegend activities={board.activities || []} />
           </div>
         )}
       </div>

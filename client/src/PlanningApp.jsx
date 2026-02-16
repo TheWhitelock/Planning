@@ -10,15 +10,19 @@ import {
 } from '@fortawesome/free-solid-svg-icons';
 import './PlanningApp.css';
 import ScheduleGrid from './planning/ScheduleGrid.jsx';
+import ScheduleLegend from './planning/ScheduleLegend.jsx';
 import ProjectModal from './planning/modals/ProjectModal.jsx';
 import ActivityModal from './planning/modals/ActivityModal.jsx';
 import ExportModal from './planning/modals/ExportModal.jsx';
 import SettingsModal from './planning/modals/SettingsModal.jsx';
 import ScheduleFullscreenModal from './planning/modals/ScheduleFullscreenModal.jsx';
+import SubProjectModal from './planning/modals/SubProjectModal.jsx';
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ZOOM_KEY = 'matthiance.scheduleZoom.v2';
+const SCHEDULE_MODE_KEY = 'matthiance.scheduleMode.v1';
 const SCHEDULE_ZOOM_OPTIONS = ['detailed', 'standard', 'overview'];
+const SCHEDULE_MODE_OPTIONS = ['activity', 'subproject'];
 const SCHEDULE_ZOOM_LAYOUT = {
   detailed: { dayWidth: 196, weekendFactor: 0.55 },
   standard: { dayWidth: 58, weekendFactor: 0.5 },
@@ -147,6 +151,10 @@ const defaultActivityForm = () => ({
   color: '#1b5c4f'
 });
 
+const defaultSubProjectForm = () => ({
+  name: ''
+});
+
 const applyDateDerivation = (draft, driver) => {
   const next = { ...draft };
   const start = parseDateKey(next.startDate);
@@ -225,6 +233,7 @@ const getErrorMessage = async (response, fallback) => {
 
 const isWeekend = (day) => day?.isWeekend || false;
 const exportSelectionStorageKey = (projectId) => `matthiance.export.deselected.${projectId}`;
+const subprojectFilterStorageKey = (projectId) => `matthiance.subprojectFilter.${projectId}`;
 
 const sanitizeFilePart = (value) =>
   String(value || '')
@@ -267,47 +276,126 @@ const getExcelContrastTextArgb = (hexColor) => {
   return luminance < 0.45 ? 'FFFFFFFF' : 'FF1F1A14';
 };
 
-const animateReorderedRows = (rowsMap, previousTopByIdRef) => {
-  const nextTopById = new Map();
-  rowsMap.forEach((element, id) => {
-    nextTopById.set(id, element.getBoundingClientRect().top);
+const scheduleAnimationClass = (element, className) => {
+  element.classList.remove(className);
+  void element.offsetWidth;
+  element.classList.add(className);
+  const cleanup = () => {
+    element.classList.remove(className);
+    element.removeEventListener('animationend', cleanup);
+  };
+  element.addEventListener('animationend', cleanup);
+};
+
+const clearRowAnimationClasses = (element) => {
+  element.classList.remove(
+    'row-fade-swap',
+    'row-fade-out-phase',
+    'row-fade-in-phase',
+    'row-faded-state'
+  );
+};
+
+const schedulePhaseClass = (element, className) => {
+  element.classList.remove('row-fade-out-phase', 'row-fade-in-phase');
+  void element.offsetWidth;
+  element.classList.add(className);
+};
+
+const animateReorderedRows = (
+  rowsMap,
+  previousIndexByIdRef,
+  sequence,
+  animationTimersRef
+) => {
+  const nextIndexById = new Map();
+  let index = 0;
+  rowsMap.forEach((_element, id) => {
+    nextIndexById.set(id, index);
+    index += 1;
   });
 
-  nextTopById.forEach((nextTop, id) => {
-    const previousTop = previousTopByIdRef.current.get(id);
-    if (typeof previousTop !== 'number') {
-      return;
+  const changedIds = [];
+  nextIndexById.forEach((nextIndex, id) => {
+    const previousIndex = previousIndexByIdRef.current.get(id);
+    if (typeof previousIndex === 'number' && previousIndex !== nextIndex) {
+      changedIds.push(id);
+    }
+  });
+
+  animationTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+  animationTimersRef.current = [];
+  rowsMap.forEach((element) => clearRowAnimationClasses(element));
+
+  if (sequence?.firstIds?.length && sequence?.secondIds?.length) {
+    const fadeOutMs = 110;
+    const fadeInMs = 130;
+    const phaseDelay = fadeOutMs;
+    const playFadeInOnly = sequence.mode === 'in-only';
+    const allPhaseIds = [...new Set([...sequence.firstIds, ...sequence.secondIds])];
+
+    if (playFadeInOnly) {
+      allPhaseIds.forEach((id) => {
+        const element = rowsMap.get(id);
+        if (!element) {
+          return;
+        }
+        element.classList.add('row-faded-state');
+      });
     }
 
-    const deltaY = previousTop - nextTop;
-    if (Math.abs(deltaY) < 0.5) {
-      return;
-    }
+    const phases = playFadeInOnly
+      ? [
+          { ids: sequence.firstIds, className: 'row-fade-in-phase', delay: 0 },
+          { ids: sequence.secondIds, className: 'row-fade-in-phase', delay: phaseDelay }
+        ]
+      : [
+          { ids: sequence.firstIds, className: 'row-fade-out-phase', delay: 0 },
+          { ids: sequence.secondIds, className: 'row-fade-out-phase', delay: phaseDelay },
+          { ids: sequence.firstIds, className: 'row-fade-in-phase', delay: phaseDelay * 2 },
+          { ids: sequence.secondIds, className: 'row-fade-in-phase', delay: phaseDelay * 3 }
+        ];
 
-    const element = rowsMap.get(id);
-    if (!element) {
-      return;
-    }
-
-    element.style.transition = 'none';
-    element.style.transform = `translateY(${deltaY}px)`;
-    element.style.willChange = 'transform';
-
-    window.requestAnimationFrame(() => {
-      element.style.transition = 'transform 300ms cubic-bezier(0.22, 1, 0.36, 1)';
-      element.style.transform = 'translateY(0)';
+    phases.forEach(({ ids, className, delay }) => {
+      const timeoutId = window.setTimeout(() => {
+        ids.forEach((id) => {
+          const element = rowsMap.get(id);
+          if (!element) {
+            return;
+          }
+          if (className === 'row-fade-in-phase') {
+            element.classList.remove('row-faded-state');
+          }
+          schedulePhaseClass(element, className);
+        });
+      }, delay);
+      animationTimersRef.current.push(timeoutId);
     });
 
-    const cleanup = () => {
-      element.style.transition = '';
-      element.style.transform = '';
-      element.style.willChange = '';
-      element.removeEventListener('transitionend', cleanup);
-    };
-    element.addEventListener('transitionend', cleanup);
-  });
+    const cleanupDelay = playFadeInOnly
+      ? phaseDelay + fadeInMs + 16
+      : phaseDelay * 3 + fadeInMs + 16;
+    const cleanupId = window.setTimeout(() => {
+      allPhaseIds.forEach((id) => {
+        const element = rowsMap.get(id);
+        if (!element) {
+          return;
+        }
+        element.classList.remove('row-fade-out-phase', 'row-fade-in-phase', 'row-faded-state');
+      });
+    }, cleanupDelay);
+    animationTimersRef.current.push(cleanupId);
+  } else {
+    changedIds.forEach((id) => {
+      const element = rowsMap.get(id);
+      if (!element) {
+        return;
+      }
+      scheduleAnimationClass(element, 'row-fade-swap');
+    });
+  }
 
-  previousTopByIdRef.current = nextTopById;
+  previousIndexByIdRef.current = nextIndexById;
 };
 
 export default function PlanningApp() {
@@ -326,6 +414,11 @@ export default function PlanningApp() {
   const [isEditingActivity, setIsEditingActivity] = useState(false);
   const [editingActivityId, setEditingActivityId] = useState(null);
   const [activityForm, setActivityForm] = useState(defaultActivityForm);
+  const [showSubProjectModal, setShowSubProjectModal] = useState(false);
+  const [isEditingSubProject, setIsEditingSubProject] = useState(false);
+  const [editingSubProjectId, setEditingSubProjectId] = useState(null);
+  const [subProjectForm, setSubProjectForm] = useState(defaultSubProjectForm);
+  const [activeSubProjectId, setActiveSubProjectId] = useState(null);
   const [scheduleZoom, setScheduleZoom] = useState(() => {
     if (typeof window === 'undefined') {
       return 'standard';
@@ -335,6 +428,16 @@ export default function PlanningApp() {
       return storedV2;
     }
     return 'standard';
+  });
+  const [scheduleMode, setScheduleMode] = useState(() => {
+    if (typeof window === 'undefined') {
+      return 'activity';
+    }
+    const storedMode = localStorage.getItem(SCHEDULE_MODE_KEY);
+    if (SCHEDULE_MODE_OPTIONS.includes(storedMode)) {
+      return storedMode;
+    }
+    return 'activity';
   });
 
   const [showSettings, setShowSettings] = useState(false);
@@ -346,6 +449,10 @@ export default function PlanningApp() {
   const fullscreenScheduleRowRefs = useRef(new Map());
   const previousScheduleTopByIdRef = useRef(new Map());
   const previousFullscreenScheduleTopByIdRef = useRef(new Map());
+  const scheduleAnimationTimersRef = useRef([]);
+  const fullscreenAnimationTimersRef = useRef([]);
+  const preSwapAnimationTimersRef = useRef([]);
+  const pendingReorderSequenceRef = useRef(null);
 
   const hasDesktopBridge = typeof window !== 'undefined' && window.electronAPI;
 
@@ -389,6 +496,104 @@ export default function PlanningApp() {
   const isOverviewZoom = scheduleZoom === 'overview';
   const dayHeaderMode = isDetailedZoom ? 'full' : isOverviewZoom ? 'day-only' : 'compact';
   const fullscreenDayWidth = isOverviewZoom ? 24 : scheduleLayout.dayWidth;
+  const getPersistedSubProjectFilter = (projectId) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return null;
+    }
+    const raw = localStorage.getItem(subprojectFilterStorageKey(projectId));
+    const parsed = Number(raw);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  };
+  const persistSubProjectFilter = (projectId, subProjectId) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return;
+    }
+    if (!subProjectId) {
+      localStorage.removeItem(subprojectFilterStorageKey(projectId));
+      return;
+    }
+    localStorage.setItem(subprojectFilterStorageKey(projectId), String(subProjectId));
+  };
+  const buildSubProjectGroupRowIds = (subProjectId) => [
+    `subproject-group-${subProjectId}`,
+    ...(board?.activities || []).map((activity) => `activity-${subProjectId}-${activity.id}`)
+  ];
+  const buildSubProjectModeRowIds = (subProjectId) => [`subproject-${subProjectId}`];
+  const buildActivityRowIds = (activityId) =>
+    (board?.subprojects || []).map((subproject) => `activity-${subproject.id}-${activityId}`);
+  const clearPreSwapTimers = () => {
+    preSwapAnimationTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    preSwapAnimationTimersRef.current = [];
+  };
+  const applyAnimationToRowId = (rowId, className) => {
+    const scheduleElement = scheduleRowRefs.current.get(rowId);
+    if (scheduleElement) {
+      schedulePhaseClass(scheduleElement, className);
+    }
+    const fullscreenElement = fullscreenScheduleRowRefs.current.get(rowId);
+    if (fullscreenElement) {
+      schedulePhaseClass(fullscreenElement, className);
+    }
+  };
+  const clearAnimationForRowId = (rowId) => {
+    const scheduleElement = scheduleRowRefs.current.get(rowId);
+    if (scheduleElement) {
+      clearRowAnimationClasses(scheduleElement);
+    }
+    const fullscreenElement = fullscreenScheduleRowRefs.current.get(rowId);
+    if (fullscreenElement) {
+      clearRowAnimationClasses(fullscreenElement);
+    }
+  };
+  const playPreSwapFadeOut = (sequence) =>
+    new Promise((resolve) => {
+      if (!sequence?.firstIds?.length || !sequence?.secondIds?.length) {
+        resolve();
+        return;
+      }
+
+      const phaseDelay = 110;
+      const allRowIds = [...new Set([...sequence.firstIds, ...sequence.secondIds])];
+      clearPreSwapTimers();
+      allRowIds.forEach((rowId) => clearAnimationForRowId(rowId));
+
+      const firstPhaseId = window.setTimeout(() => {
+        sequence.firstIds.forEach((rowId) => applyAnimationToRowId(rowId, 'row-fade-out-phase'));
+      }, 0);
+      const secondPhaseId = window.setTimeout(() => {
+        sequence.secondIds.forEach((rowId) => applyAnimationToRowId(rowId, 'row-fade-out-phase'));
+      }, phaseDelay);
+      const doneId = window.setTimeout(() => {
+        resolve();
+      }, phaseDelay * 2 + 16);
+
+      preSwapAnimationTimersRef.current.push(firstPhaseId, secondPhaseId, doneId);
+    });
+  const restoreRowsFromPreSwap = (sequence) =>
+    new Promise((resolve) => {
+      if (!sequence?.firstIds?.length || !sequence?.secondIds?.length) {
+        resolve();
+        return;
+      }
+
+      const phaseDelay = 110;
+      clearPreSwapTimers();
+
+      const firstPhaseId = window.setTimeout(() => {
+        sequence.firstIds.forEach((rowId) => applyAnimationToRowId(rowId, 'row-fade-in-phase'));
+      }, 0);
+      const secondPhaseId = window.setTimeout(() => {
+        sequence.secondIds.forEach((rowId) => applyAnimationToRowId(rowId, 'row-fade-in-phase'));
+      }, phaseDelay);
+      const doneId = window.setTimeout(() => {
+        [...new Set([...sequence.firstIds, ...sequence.secondIds])].forEach((rowId) =>
+          clearAnimationForRowId(rowId)
+        );
+        resolve();
+      }, phaseDelay + 130 + 16);
+
+      preSwapAnimationTimersRef.current.push(firstPhaseId, secondPhaseId, doneId);
+    });
 
   const withApi = async (requestFn) => {
     try {
@@ -418,6 +623,7 @@ export default function PlanningApp() {
     setProjects(result);
     if (result.length === 0) {
       setSelectedProjectId(null);
+      setActiveSubProjectId(null);
       setBoard(null);
       return;
     }
@@ -428,14 +634,18 @@ export default function PlanningApp() {
     });
   };
 
-  const loadBoard = async (projectId) => {
+  const loadBoard = async (projectId, requestedSubProjectId) => {
     if (!projectId) {
       setBoard(null);
       return;
     }
 
     const result = await withApi(async () => {
-      const response = await fetch(apiUrl(`/api/projects/${projectId}/board`));
+      const boardPath =
+        scheduleMode === 'activity' && requestedSubProjectId
+          ? `/api/projects/${projectId}/board?subProjectId=${encodeURIComponent(requestedSubProjectId)}`
+          : `/api/projects/${projectId}/board`;
+      const response = await fetch(apiUrl(boardPath));
       if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Unable to load project board.'));
       }
@@ -446,6 +656,11 @@ export default function PlanningApp() {
       return;
     }
 
+    if (result.activeSubProjectId !== activeSubProjectId) {
+      setActiveSubProjectId(result.activeSubProjectId || null);
+      persistSubProjectFilter(projectId, result.activeSubProjectId || null);
+    }
+
     setBoard(result);
   };
 
@@ -454,8 +669,16 @@ export default function PlanningApp() {
   }, []);
 
   useEffect(() => {
-    loadBoard(selectedProjectId);
+    if (!selectedProjectId) {
+      setActiveSubProjectId(null);
+      return;
+    }
+    setActiveSubProjectId(getPersistedSubProjectFilter(selectedProjectId));
   }, [selectedProjectId]);
+
+  useEffect(() => {
+    loadBoard(selectedProjectId, activeSubProjectId);
+  }, [selectedProjectId, activeSubProjectId, scheduleMode]);
 
   useEffect(() => {
     if (typeof window === 'undefined') {
@@ -465,12 +688,33 @@ export default function PlanningApp() {
   }, [scheduleZoom]);
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    localStorage.setItem(SCHEDULE_MODE_KEY, scheduleMode);
+  }, [scheduleMode]);
+
+  useEffect(
+    () => () => {
+      clearPreSwapTimers();
+      scheduleAnimationTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+      fullscreenAnimationTimersRef.current.forEach((timeoutId) => window.clearTimeout(timeoutId));
+    },
+    []
+  );
+
+  useEffect(() => {
     if (typeof document === 'undefined') {
       return;
     }
 
     const hasOpenModal =
-      showProjectModal || showActivityModal || showSettings || showScheduleFullscreen || showExportModal;
+      showProjectModal ||
+      showActivityModal ||
+      showSubProjectModal ||
+      showSettings ||
+      showScheduleFullscreen ||
+      showExportModal;
     const previousOverflow = document.body.style.overflow;
 
     if (hasOpenModal) {
@@ -480,7 +724,14 @@ export default function PlanningApp() {
     return () => {
       document.body.style.overflow = previousOverflow;
     };
-  }, [showProjectModal, showActivityModal, showSettings, showScheduleFullscreen, showExportModal]);
+  }, [
+    showProjectModal,
+    showActivityModal,
+    showSubProjectModal,
+    showSettings,
+    showScheduleFullscreen,
+    showExportModal
+  ]);
 
   useEffect(() => {
     if (!showScheduleFullscreen) {
@@ -498,8 +749,14 @@ export default function PlanningApp() {
   }, [showScheduleFullscreen]);
 
   useLayoutEffect(() => {
-    const activityIds = board?.activities?.map((activity) => activity.id) || [];
-    if (activityIds.length === 0) {
+    const rowIds =
+      scheduleMode === 'activity'
+        ? (board?.subprojects || []).flatMap((subproject) => [
+            `subproject-group-${subproject.id}`,
+            ...(board?.activities || []).map((activity) => `activity-${subproject.id}-${activity.id}`)
+          ])
+        : (board?.subprojects || []).map((subproject) => `subproject-${subproject.id}`);
+    if (rowIds.length === 0) {
       previousScheduleTopByIdRef.current = new Map();
       previousFullscreenScheduleTopByIdRef.current = new Map();
       return;
@@ -507,7 +764,7 @@ export default function PlanningApp() {
 
     const scheduleRows = new Map();
     const fullscreenScheduleRows = new Map();
-    for (const id of activityIds) {
+    for (const id of rowIds) {
       const scheduleElement = scheduleRowRefs.current.get(id);
       if (scheduleElement) {
         scheduleRows.set(id, scheduleElement);
@@ -518,9 +775,22 @@ export default function PlanningApp() {
       }
     }
 
-    animateReorderedRows(scheduleRows, previousScheduleTopByIdRef);
-    animateReorderedRows(fullscreenScheduleRows, previousFullscreenScheduleTopByIdRef);
-  }, [board?.activities]);
+    const sequence = pendingReorderSequenceRef.current;
+    pendingReorderSequenceRef.current = null;
+
+    animateReorderedRows(
+      scheduleRows,
+      previousScheduleTopByIdRef,
+      sequence,
+      scheduleAnimationTimersRef
+    );
+    animateReorderedRows(
+      fullscreenScheduleRows,
+      previousFullscreenScheduleTopByIdRef,
+      sequence,
+      fullscreenAnimationTimersRef
+    );
+  }, [board?.activities, board?.subprojects, scheduleMode]);
 
   const bindScheduleRowRef = (activityId) => (element) => {
     if (element) {
@@ -668,7 +938,7 @@ export default function PlanningApp() {
     }
 
     const ok = window.confirm(
-      `Delete project \"${selectedProject.name}\" and all related activities and instances?`
+      `Delete project \"${selectedProject.name}\" and all related sub-projects, activities, and instances?`
     );
     if (!ok) {
       return;
@@ -689,7 +959,7 @@ export default function PlanningApp() {
     }
 
     setStatus(
-      `Project deleted (${deleted.deletedActivities} activities, ${deleted.deletedInstances} instances).`
+      `Project deleted (${deleted.deletedSubprojects || 0} sub-projects, ${deleted.deletedActivities} activities, ${deleted.deletedInstances} instances).`
     );
     await loadProjects();
   };
@@ -810,6 +1080,24 @@ export default function PlanningApp() {
       return;
     }
 
+    const activityRows = board?.activities || [];
+    const currentIndex = activityRows.findIndex((activity) => activity.id === activityId);
+    const neighborIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    const neighbor = activityRows[neighborIndex];
+    const sequence =
+      scheduleMode === 'activity' && neighbor && currentIndex >= 0
+        ? {
+            firstIds: buildActivityRowIds(activityId),
+            secondIds: buildActivityRowIds(neighbor.id)
+          }
+        : null;
+    if (sequence) {
+      await playPreSwapFadeOut(sequence);
+      pendingReorderSequenceRef.current = { ...sequence, mode: 'in-only' };
+    } else {
+      pendingReorderSequenceRef.current = null;
+    }
+
     const moved = await withApi(async () => {
       const response = await fetch(
         apiUrl(`/api/projects/${selectedProjectId}/activities/${activityId}/reorder`),
@@ -826,10 +1114,18 @@ export default function PlanningApp() {
     });
 
     if (!moved) {
+      pendingReorderSequenceRef.current = null;
+      if (sequence) {
+        await restoreRowsFromPreSwap(sequence);
+      }
       return;
     }
 
     if (!moved.moved) {
+      pendingReorderSequenceRef.current = null;
+      if (sequence) {
+        await restoreRowsFromPreSwap(sequence);
+      }
       setStatus(direction === 'up' ? 'Activity is already at the top.' : 'Activity is already at the bottom.');
       return;
     }
@@ -837,40 +1133,222 @@ export default function PlanningApp() {
     await loadBoard(selectedProjectId);
   };
 
-  const handleCellClick = async (activityId, day, filled) => {
+  const closeSubProjectModal = () => {
+    setShowSubProjectModal(false);
+    setIsEditingSubProject(false);
+    setEditingSubProjectId(null);
+  };
+
+  const openCreateSubProjectModal = () => {
+    if (!selectedProjectId) {
+      setStatus('Select or create a project first.');
+      return;
+    }
+    setIsEditingSubProject(false);
+    setEditingSubProjectId(null);
+    setSubProjectForm(defaultSubProjectForm());
+    setShowSubProjectModal(true);
+  };
+
+  const openEditSubProjectModal = (subproject) => {
+    if (!subproject) {
+      return;
+    }
+    setIsEditingSubProject(true);
+    setEditingSubProjectId(subproject.id);
+    setSubProjectForm({ name: subproject.name });
+    setShowSubProjectModal(true);
+  };
+
+  const handleSubProjectSubmit = async (event) => {
+    event.preventDefault();
+    if (!selectedProjectId) {
+      setStatus('Select or create a project first.');
+      return;
+    }
+
+    const name = subProjectForm.name.trim();
+    if (!name) {
+      setStatus('Sub-project name is required.');
+      return;
+    }
+
+    if (isEditingSubProject && !editingSubProjectId) {
+      setStatus('No sub-project selected for editing.');
+      return;
+    }
+
+    const endpoint = isEditingSubProject
+      ? `/api/projects/${selectedProjectId}/subprojects/${editingSubProjectId}`
+      : `/api/projects/${selectedProjectId}/subprojects`;
+    const method = isEditingSubProject ? 'PUT' : 'POST';
+
+    const saved = await withApi(async () => {
+      const response = await fetch(apiUrl(endpoint), {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Unable to save sub-project.'));
+      }
+      return response.json();
+    });
+
+    if (!saved) {
+      return;
+    }
+
+    closeSubProjectModal();
+    setSubProjectForm(defaultSubProjectForm());
+    if (!isEditingSubProject) {
+      setActiveSubProjectId(saved.id);
+      persistSubProjectFilter(selectedProjectId, saved.id);
+    }
+    setStatus(isEditingSubProject ? 'Sub-project updated.' : 'Sub-project added.');
+    await loadBoard(selectedProjectId, isEditingSubProject ? activeSubProjectId : saved.id);
+  };
+
+  const handleMoveSubProject = async (subProjectId, direction) => {
     if (!selectedProjectId) {
       return;
     }
 
-    if (!filled) {
-      const created = await withApi(async () => {
-        const response = await fetch(
-          apiUrl(`/api/projects/${selectedProjectId}/activities/${activityId}/instances`),
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ date: day })
+    const subprojectRows = board?.subprojects || [];
+    const currentIndex = subprojectRows.findIndex((subproject) => subproject.id === subProjectId);
+    const neighborIndex = direction === 'up' ? currentIndex - 1 : currentIndex + 1;
+    const neighbor = subprojectRows[neighborIndex];
+    const sequence =
+      neighbor && currentIndex >= 0
+        ? {
+            firstIds:
+              scheduleMode === 'activity'
+                ? buildSubProjectGroupRowIds(subProjectId)
+                : buildSubProjectModeRowIds(subProjectId),
+            secondIds:
+              scheduleMode === 'activity'
+                ? buildSubProjectGroupRowIds(neighbor.id)
+                : buildSubProjectModeRowIds(neighbor.id)
           }
-        );
-        if (!response.ok) {
-          throw new Error(await getErrorMessage(response, 'Unable to assign activity.'));
+        : null;
+    if (sequence) {
+      await playPreSwapFadeOut(sequence);
+      pendingReorderSequenceRef.current = { ...sequence, mode: 'in-only' };
+    } else {
+      pendingReorderSequenceRef.current = null;
+    }
+
+    const moved = await withApi(async () => {
+      const response = await fetch(
+        apiUrl(`/api/projects/${selectedProjectId}/subprojects/${subProjectId}/reorder`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ direction })
         }
-        return response.json();
-      });
-
-      if (!created) {
-        return;
+      );
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Unable to reorder sub-project.'));
       }
+      return response.json();
+    });
 
-      setStatus('Activity assigned.');
-      await loadBoard(selectedProjectId);
+    if (!moved) {
+      pendingReorderSequenceRef.current = null;
+      if (sequence) {
+        await restoreRowsFromPreSwap(sequence);
+      }
+      return;
+    }
+
+    if (!moved.moved) {
+      pendingReorderSequenceRef.current = null;
+      if (sequence) {
+        await restoreRowsFromPreSwap(sequence);
+      }
+      setStatus(
+        direction === 'up'
+          ? 'Sub-project is already at the top.'
+          : 'Sub-project is already at the bottom.'
+      );
+      return;
+    }
+
+    await loadBoard(selectedProjectId);
+  };
+
+  const handleDeleteSubProject = async (subproject) => {
+    if (!selectedProjectId || !subproject) {
+      return;
+    }
+
+    const ok = window.confirm(
+      `Delete sub-project \"${subproject.name}\" and all of its activity instances?`
+    );
+    if (!ok) {
       return;
     }
 
     const deleted = await withApi(async () => {
       const response = await fetch(
+        apiUrl(`/api/projects/${selectedProjectId}/subprojects/${subproject.id}`),
+        { method: 'DELETE' }
+      );
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        if (response.status === 409 && body?.code === 'SUBPROJECT_MINIMUM_REQUIRED') {
+          throw new Error('At least one sub-project is required.');
+        }
+        throw new Error(body?.error || 'Unable to delete sub-project.');
+      }
+      return body;
+    });
+
+    if (!deleted) {
+      return;
+    }
+
+    setStatus(`Sub-project deleted (${deleted.deletedInstances} instances removed).`);
+    await loadBoard(selectedProjectId);
+  };
+
+  const createActivityInstance = async (activityId, day, subProjectId) => {
+    if (!selectedProjectId || !subProjectId) {
+      return false;
+    }
+
+    const created = await withApi(async () => {
+      const response = await fetch(
+        apiUrl(`/api/projects/${selectedProjectId}/activities/${activityId}/instances`),
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ date: day, subProjectId })
+        }
+      );
+      if (!response.ok) {
+        throw new Error(await getErrorMessage(response, 'Unable to assign activity.'));
+      }
+      return response.json();
+    });
+
+    if (!created) {
+      return false;
+    }
+    setStatus('Activity assigned.');
+    await loadBoard(selectedProjectId);
+    return true;
+  };
+
+  const deleteActivityInstance = async (activityId, day, subProjectId) => {
+    if (!selectedProjectId || !subProjectId) {
+      return false;
+    }
+
+    const deleted = await withApi(async () => {
+      const response = await fetch(
         apiUrl(
-          `/api/projects/${selectedProjectId}/activities/${activityId}/instances/${encodeURIComponent(day)}`
+          `/api/projects/${selectedProjectId}/activities/${activityId}/instances/${encodeURIComponent(day)}?subProjectId=${encodeURIComponent(subProjectId)}`
         ),
         { method: 'DELETE' }
       );
@@ -881,11 +1359,33 @@ export default function PlanningApp() {
     });
 
     if (!deleted) {
-      return;
+      return false;
     }
 
     setStatus('Activity instance removed.');
     await loadBoard(selectedProjectId);
+    return true;
+  };
+
+  const handleActivityCellClick = async (activityId, day, filled, subProjectId = null) => {
+    const targetSubProjectId = subProjectId || activeSubProjectId;
+    if (!targetSubProjectId) {
+      setStatus('Select a sub-project first.');
+      return;
+    }
+    if (filled) {
+      await deleteActivityInstance(activityId, day, targetSubProjectId);
+      return;
+    }
+    await createActivityInstance(activityId, day, targetSubProjectId);
+  };
+
+  const handleSubProjectAddInstance = async (subProjectId, day, activityId) => {
+    await createActivityInstance(activityId, day, subProjectId);
+  };
+
+  const handleSubProjectBlockDelete = async (subProjectId, day, activityId) => {
+    await deleteActivityInstance(activityId, day, subProjectId);
   };
 
   const getCurrentExportDeselected = (projectId, activities) => {
@@ -947,6 +1447,11 @@ export default function PlanningApp() {
     const selectedActivities = board.activities.filter(
       (activity) => !exportDeselectedActivityIds.includes(activity.id)
     );
+    const selectedActivityIds = new Set(selectedActivities.map((activity) => activity.id));
+    const activityById = (board.activities || []).reduce((acc, activity) => {
+      acc[activity.id] = activity;
+      return acc;
+    }, {});
     if (selectedActivities.length === 0) {
       setStatus('Select at least one activity to export.');
       return;
@@ -957,6 +1462,7 @@ export default function PlanningApp() {
       const workbook = new ExcelJS.Workbook();
       const infoSheet = workbook.addWorksheet('Project Info');
       const worksheet = workbook.addWorksheet('Schedule');
+      const subProjectWorksheet = workbook.addWorksheet('Sub-project Schedule');
 
       infoSheet.getColumn(1).width = 18;
       infoSheet.getColumn(2).width = 42;
@@ -1086,6 +1592,88 @@ export default function PlanningApp() {
       });
 
       worksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+
+      subProjectWorksheet.getColumn(1).width = firstColumnWidth;
+      for (let index = 0; index < board.days.length; index += 1) {
+        subProjectWorksheet.getColumn(index + 2).width = dayColumnWidth;
+      }
+
+      const subProjectHeaderRow1 = subProjectWorksheet.getRow(1);
+      const subProjectHeaderRow2 = subProjectWorksheet.getRow(2);
+      subProjectHeaderRow1.getCell(1).value = 'Sub-project';
+      subProjectWorksheet.mergeCells(1, 1, 2, 1);
+
+      let subProjectCursor = 0;
+      while (subProjectCursor < board.days.length) {
+        const day = board.days[subProjectCursor];
+        const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
+          month: 'long',
+          year: 'numeric',
+          timeZone: 'UTC'
+        });
+        let end = subProjectCursor;
+        while (
+          end + 1 < board.days.length &&
+          parseDateKey(board.days[end + 1].date)?.getUTCMonth() === parseDateKey(day.date)?.getUTCMonth() &&
+          parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
+            parseDateKey(day.date)?.getUTCFullYear()
+        ) {
+          end += 1;
+        }
+        const startCol = subProjectCursor + 2;
+        const endCol = end + 2;
+        subProjectHeaderRow1.getCell(startCol).value = monthLabel || '';
+        if (endCol > startCol) {
+          subProjectWorksheet.mergeCells(1, startCol, 1, endCol);
+        }
+        subProjectCursor = end + 1;
+      }
+
+      board.days.forEach((day, index) => {
+        subProjectHeaderRow2.getCell(index + 2).value = formatDayHeader(day.date, dayHeaderMode);
+      });
+
+      for (let rowIndex = 1; rowIndex <= 2; rowIndex += 1) {
+        const row = subProjectWorksheet.getRow(rowIndex);
+        for (let col = 1; col <= board.days.length + 1; col += 1) {
+          const cell = row.getCell(col);
+          cell.fill = headerFill;
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+          cell.font = { bold: true };
+        }
+      }
+
+      (board.subprojects || []).forEach((subproject, subprojectIndex) => {
+        const rowNumber = 3 + subprojectIndex;
+        const row = subProjectWorksheet.getRow(rowNumber);
+        row.getCell(1).value = subproject.name;
+        row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+
+        const dayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
+        board.days.forEach((day, dayIndex) => {
+          const cell = row.getCell(dayIndex + 2);
+          const entries = dayMap[day.date] || [];
+          const labels = entries
+            .filter((entry) => selectedActivityIds.has(entry.activityId))
+            .map((entry) => activityById[entry.activityId]?.name)
+            .filter(Boolean);
+
+          if (labels.length > 0) {
+            cell.value = labels.join('\n');
+            cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+            return;
+          }
+
+          if (isWeekend(day)) {
+            cell.fill = weekendFill;
+            cell.border = border;
+          }
+          cell.alignment = { vertical: 'middle', horizontal: 'center' };
+        });
+      });
+
+      subProjectWorksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
         type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -1237,6 +1825,18 @@ export default function PlanningApp() {
             <h2>Schedule</h2>
           </div>
           <div className="schedule-header-actions">
+            <div className="mode-toggle" role="group" aria-label="Schedule mode">
+              {SCHEDULE_MODE_OPTIONS.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  className={`mode-option ${scheduleMode === option ? 'is-active' : ''}`}
+                  onClick={() => setScheduleMode(option)}
+                >
+                  {option === 'activity' ? 'Activity mode' : 'Sub-project mode'}
+                </button>
+              ))}
+            </div>
             <div className="zoom-toggle" role="group" aria-label="Schedule zoom level">
               {SCHEDULE_ZOOM_OPTIONS.map((option) => (
                 <button
@@ -1284,30 +1884,40 @@ export default function PlanningApp() {
         {!board?.project ? (
           <p className="empty-state">Select a project to view its timeline.</p>
         ) : (
-          <div
-            className={`schedule-scroll ${isOverviewZoom ? 'mode-overview' : ''}`}
-            style={{
-              '--day-col-width': `${scheduleLayout.dayWidth}px`,
-              '--weekend-width-factor': scheduleLayout.weekendFactor
-            }}
-          >
-            <ScheduleGrid
-              board={board}
-              monthGroups={monthGroups}
-              dayHeaderMode={dayHeaderMode}
-              isDetailedZoom={isDetailedZoom}
-              isOverviewZoom={isOverviewZoom}
-              isWeekend={isWeekend}
-              formatDayHeader={formatDayHeader}
-              formatDayTooltip={formatDayTooltip}
-              onMoveActivity={handleMoveActivity}
-              onEditActivity={openEditActivityModal}
-              onDeleteActivity={handleDeleteActivity}
-              onCellClick={handleCellClick}
-              onCreateActivity={openCreateActivityModal}
-              selectedProjectId={selectedProjectId}
-              bindRowRef={bindScheduleRowRef}
-            />
+          <div className="schedule-pane">
+            <div
+              className={`schedule-scroll ${isOverviewZoom ? 'mode-overview' : ''}`}
+              style={{
+                '--day-col-width': `${scheduleLayout.dayWidth}px`,
+                '--weekend-width-factor': scheduleLayout.weekendFactor
+              }}
+            >
+              <ScheduleGrid
+                board={board}
+                scheduleMode={scheduleMode}
+                monthGroups={monthGroups}
+                dayHeaderMode={dayHeaderMode}
+                isDetailedZoom={isDetailedZoom}
+                isOverviewZoom={isOverviewZoom}
+                isWeekend={isWeekend}
+                formatDayHeader={formatDayHeader}
+                formatDayTooltip={formatDayTooltip}
+                onMoveActivity={handleMoveActivity}
+                onEditActivity={openEditActivityModal}
+                onDeleteActivity={handleDeleteActivity}
+                onCellClick={handleActivityCellClick}
+                onCreateActivity={openCreateActivityModal}
+                onMoveSubProject={handleMoveSubProject}
+                onEditSubProject={openEditSubProjectModal}
+                onDeleteSubProject={handleDeleteSubProject}
+                onCreateSubProject={openCreateSubProjectModal}
+                onSubProjectAddInstance={handleSubProjectAddInstance}
+                onSubProjectDeleteInstance={handleSubProjectBlockDelete}
+                selectedProjectId={selectedProjectId}
+                bindRowRef={bindScheduleRowRef}
+              />
+            </div>
+            <ScheduleLegend activities={board.activities || []} />
           </div>
         )}
       </section>
@@ -1324,6 +1934,9 @@ export default function PlanningApp() {
       <ScheduleFullscreenModal
         show={showScheduleFullscreen}
         onClose={() => setShowScheduleFullscreen(false)}
+        modeOptions={SCHEDULE_MODE_OPTIONS}
+        scheduleMode={scheduleMode}
+        onScheduleModeChange={setScheduleMode}
         zoomOptions={SCHEDULE_ZOOM_OPTIONS}
         scheduleZoom={scheduleZoom}
         onScheduleZoomChange={setScheduleZoom}
@@ -1342,8 +1955,14 @@ export default function PlanningApp() {
         onMoveActivity={handleMoveActivity}
         onEditActivity={openEditActivityModal}
         onDeleteActivity={handleDeleteActivity}
-        onCellClick={handleCellClick}
+        onCellClick={handleActivityCellClick}
         onCreateActivity={openCreateActivityModal}
+        onMoveSubProject={handleMoveSubProject}
+        onEditSubProject={openEditSubProjectModal}
+        onDeleteSubProject={handleDeleteSubProject}
+        onCreateSubProject={openCreateSubProjectModal}
+        onSubProjectAddInstance={handleSubProjectAddInstance}
+        onSubProjectDeleteInstance={handleSubProjectBlockDelete}
         bindRowRef={bindFullscreenScheduleRowRef}
       />
 
@@ -1368,6 +1987,20 @@ export default function PlanningApp() {
         }
         onClose={closeActivityModal}
         onSubmit={handleActivitySubmit}
+      />
+
+      <SubProjectModal
+        show={showSubProjectModal}
+        isEditingSubProject={isEditingSubProject}
+        subProjectForm={subProjectForm}
+        onChange={(field, value) =>
+          setSubProjectForm((current) => ({
+            ...current,
+            [field]: value
+          }))
+        }
+        onClose={closeSubProjectModal}
+        onSubmit={handleSubProjectSubmit}
       />
 
       <SettingsModal

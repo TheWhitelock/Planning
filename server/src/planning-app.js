@@ -5,6 +5,7 @@ import { createDatabase } from './db.js';
 
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const HEX_COLOR_PATTERN = /^#[0-9a-fA-F]{6}$/;
+const DEFAULT_SUBPROJECT_NAME = 'Main';
 
 const resolveDbPath = (dbPath = process.env.DB_PATH || './dev.db') =>
   dbPath && path.isAbsolute(dbPath) ? dbPath : path.resolve(process.cwd(), dbPath);
@@ -155,6 +156,20 @@ const normalizeActivityPayload = (payload = {}) => {
   };
 };
 
+const normalizeSubprojectPayload = (payload = {}) => {
+  const name = typeof payload.name === 'string' ? payload.name.trim() : '';
+
+  if (!name) {
+    return { error: 'Sub-project name is required.' };
+  }
+
+  return {
+    value: {
+      name
+    }
+  };
+};
+
 const mapProject = (row) =>
   row
     ? {
@@ -180,10 +195,22 @@ const mapActivity = (row) =>
       }
     : null;
 
+const mapSubproject = (row) =>
+  row
+    ? {
+        id: row.id,
+        projectId: row.projectId,
+        name: row.name,
+        sortOrder: row.sortOrder,
+        createdAt: row.createdAt
+      }
+    : null;
+
 const mapInstance = (row) =>
   row
     ? {
         id: row.id,
+        subProjectId: row.subProjectId,
         activityId: row.activityId,
         day: row.day,
         createdAt: row.createdAt
@@ -276,12 +303,73 @@ export const createApp = async ({ dbPath } = {}) => {
     return mapActivity(rows[0]);
   };
 
-  const getInstanceByActivityAndDay = (activityId, day) => {
+  const getSubprojectById = (subProjectId) => {
     const rows = db.all(
-      `SELECT id, activityId, day, createdAt
+      `SELECT id, projectId, name, sortOrder, createdAt
+       FROM subprojects
+       WHERE id = ?`,
+      [subProjectId]
+    );
+    return mapSubproject(rows[0]);
+  };
+
+  const getLatestSubprojectForProject = (projectId) => {
+    const rows = db.all(
+      `SELECT id, projectId, name, sortOrder, createdAt
+       FROM subprojects
+       WHERE projectId = ?
+       ORDER BY sortOrder DESC, id DESC
+       LIMIT 1`,
+      [projectId]
+    );
+    return mapSubproject(rows[0]);
+  };
+
+  const getSubprojectByProjectAndId = (projectId, subProjectId) => {
+    const rows = db.all(
+      `SELECT id, projectId, name, sortOrder, createdAt
+       FROM subprojects
+       WHERE projectId = ? AND id = ?`,
+      [projectId, subProjectId]
+    );
+    return mapSubproject(rows[0]);
+  };
+
+  const getSubprojectsForProject = (projectId) =>
+    db
+      .all(
+        `SELECT id, projectId, name, sortOrder, createdAt
+         FROM subprojects
+         WHERE projectId = ?
+         ORDER BY sortOrder ASC, id ASC`,
+        [projectId]
+      )
+      .map(mapSubproject);
+
+  const createDefaultSubprojectForProject = async (projectId) => {
+    const existingRows = db.all(
+      `SELECT id
+       FROM subprojects
+       WHERE projectId = ?
+       LIMIT 1`,
+      [projectId]
+    );
+    if (existingRows.length > 0) {
+      return;
+    }
+    await db.run(
+      `INSERT INTO subprojects (projectId, name, sortOrder, createdAt)
+       VALUES (?, ?, 1, ?)`,
+      [projectId, DEFAULT_SUBPROJECT_NAME, new Date().toISOString()]
+    );
+  };
+
+  const getInstanceBySubprojectActivityAndDay = (subProjectId, activityId, day) => {
+    const rows = db.all(
+      `SELECT id, subProjectId, activityId, day, createdAt
        FROM activity_instances
-       WHERE activityId = ? AND day = ?`,
-      [activityId, day]
+       WHERE subProjectId = ? AND activityId = ? AND day = ?`,
+      [subProjectId, activityId, day]
     );
     return mapInstance(rows[0]);
   };
@@ -322,6 +410,9 @@ export const createApp = async ({ dbPath } = {}) => {
     );
 
     const created = getLatestProject();
+    if (created) {
+      await createDefaultSubprojectForProject(created.id);
+    }
     res.status(201).json(created);
   });
 
@@ -442,10 +533,18 @@ export const createApp = async ({ dbPath } = {}) => {
       [projectId]
     );
 
+    const subprojectCountRows = db.all(
+      `SELECT COUNT(*) AS total
+       FROM subprojects
+       WHERE projectId = ?`,
+      [projectId]
+    );
+
     await db.run('DELETE FROM projects WHERE id = ?', [projectId]);
 
     res.json({
       deletedId: projectId,
+      deletedSubprojects: subprojectCountRows[0]?.total || 0,
       deletedActivities: activityCountRows[0]?.total || 0,
       deletedInstances: instanceCountRows[0]?.total || 0
     });
@@ -637,7 +736,194 @@ export const createApp = async ({ dbPath } = {}) => {
     });
   });
 
-  app.get('/api/projects/:projectId/board', (req, res) => {
+  app.get('/api/projects/:projectId/subprojects', (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    if (!projectId) {
+      res.status(400).json({ error: 'Invalid project id.' });
+      return;
+    }
+
+    if (!getProjectById(projectId)) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+
+    res.json(getSubprojectsForProject(projectId));
+  });
+
+  app.post('/api/projects/:projectId/subprojects', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    if (!projectId) {
+      res.status(400).json({ error: 'Invalid project id.' });
+      return;
+    }
+
+    if (!getProjectById(projectId)) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+
+    const normalized = normalizeSubprojectPayload(req.body);
+    if (!normalized.value) {
+      res.status(400).json({ error: normalized.error });
+      return;
+    }
+
+    const nextSortOrderRows = db.all(
+      `SELECT COALESCE(MAX(sortOrder), 0) + 1 AS nextSortOrder
+       FROM subprojects
+       WHERE projectId = ?`,
+      [projectId]
+    );
+    const nextSortOrder = nextSortOrderRows[0]?.nextSortOrder || 1;
+
+    try {
+      await db.run(
+        `INSERT INTO subprojects (projectId, name, sortOrder, createdAt)
+         VALUES (?, ?, ?, ?)`,
+        [projectId, normalized.value.name, nextSortOrder, new Date().toISOString()]
+      );
+    } catch (error) {
+      if (isConstraintError(error)) {
+        res.status(409).json({ error: 'Sub-project name must be unique within this project.' });
+        return;
+      }
+      throw error;
+    }
+
+    res.status(201).json(getLatestSubprojectForProject(projectId));
+  });
+
+  app.put('/api/projects/:projectId/subprojects/:subProjectId', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    const subProjectId = parseIntegerId(req.params.subProjectId);
+    if (!projectId || !subProjectId) {
+      res.status(400).json({ error: 'Invalid project id or sub-project id.' });
+      return;
+    }
+
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    const normalized = normalizeSubprojectPayload(req.body);
+    if (!normalized.value) {
+      res.status(400).json({ error: normalized.error });
+      return;
+    }
+
+    try {
+      await db.run(
+        `UPDATE subprojects
+         SET name = ?
+         WHERE id = ?`,
+        [normalized.value.name, subProjectId]
+      );
+    } catch (error) {
+      if (isConstraintError(error)) {
+        res.status(409).json({ error: 'Sub-project name must be unique within this project.' });
+        return;
+      }
+      throw error;
+    }
+
+    res.json(getSubprojectById(subProjectId));
+  });
+
+  app.post('/api/projects/:projectId/subprojects/:subProjectId/reorder', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    const subProjectId = parseIntegerId(req.params.subProjectId);
+    if (!projectId || !subProjectId) {
+      res.status(400).json({ error: 'Invalid project id or sub-project id.' });
+      return;
+    }
+
+    const direction = typeof req.body?.direction === 'string' ? req.body.direction : '';
+    if (direction !== 'up' && direction !== 'down') {
+      res.status(400).json({ error: "direction must be 'up' or 'down'." });
+      return;
+    }
+
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    const neighborRows = db.all(
+      direction === 'up'
+        ? `SELECT id, sortOrder
+           FROM subprojects
+           WHERE projectId = ? AND sortOrder < ?
+           ORDER BY sortOrder DESC, id DESC
+           LIMIT 1`
+        : `SELECT id, sortOrder
+           FROM subprojects
+           WHERE projectId = ? AND sortOrder > ?
+           ORDER BY sortOrder ASC, id ASC
+           LIMIT 1`,
+      [projectId, subproject.sortOrder]
+    );
+
+    const neighbor = neighborRows[0];
+    if (!neighbor) {
+      res.json({ moved: false, subproject: getSubprojectById(subProjectId) });
+      return;
+    }
+
+    await db.run('UPDATE subprojects SET sortOrder = ? WHERE id = ?', [subproject.sortOrder, neighbor.id]);
+    await db.run('UPDATE subprojects SET sortOrder = ? WHERE id = ?', [neighbor.sortOrder, subProjectId]);
+
+    res.json({ moved: true, subproject: getSubprojectById(subProjectId) });
+  });
+
+  app.delete('/api/projects/:projectId/subprojects/:subProjectId', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    const subProjectId = parseIntegerId(req.params.subProjectId);
+    if (!projectId || !subProjectId) {
+      res.status(400).json({ error: 'Invalid project id or sub-project id.' });
+      return;
+    }
+
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    const siblingCountRows = db.all(
+      `SELECT COUNT(*) AS total
+       FROM subprojects
+       WHERE projectId = ?`,
+      [projectId]
+    );
+    const siblingCount = siblingCountRows[0]?.total || 0;
+    if (siblingCount <= 1) {
+      res.status(409).json({
+        code: 'SUBPROJECT_MINIMUM_REQUIRED',
+        error: 'A project must have at least one sub-project.'
+      });
+      return;
+    }
+
+    const countRows = db.all(
+      `SELECT COUNT(*) AS total
+       FROM activity_instances
+       WHERE subProjectId = ?`,
+      [subProjectId]
+    );
+
+    await db.run('DELETE FROM subprojects WHERE id = ?', [subProjectId]);
+
+    res.json({
+      deletedId: subProjectId,
+      deletedInstances: countRows[0]?.total || 0
+    });
+  });
+
+  app.get('/api/projects/:projectId/board', async (req, res) => {
     const projectId = parseIntegerId(req.params.projectId);
     if (!projectId) {
       res.status(400).json({ error: 'Invalid project id.' });
@@ -650,6 +936,8 @@ export const createApp = async ({ dbPath } = {}) => {
       return;
     }
 
+    await createDefaultSubprojectForProject(projectId);
+
     const activityRows = db.all(
       `SELECT id, projectId, name, color, createdAt, sortOrder
        FROM activities
@@ -658,20 +946,53 @@ export const createApp = async ({ dbPath } = {}) => {
       [projectId]
     );
 
+    const subprojects = getSubprojectsForProject(projectId);
+    const hasSubprojectQuery = Object.prototype.hasOwnProperty.call(req.query, 'subProjectId');
+    const requestedSubProjectId = parseIntegerId(req.query.subProjectId);
+    if (hasSubprojectQuery && !requestedSubProjectId) {
+      res.status(400).json({ error: 'Invalid subProjectId query parameter.' });
+      return;
+    }
+
+    const activeSubProjectId = requestedSubProjectId || subprojects[0]?.id || null;
+    if (
+      activeSubProjectId &&
+      !subprojects.some((subproject) => subproject.id === activeSubProjectId)
+    ) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
     const instanceRows = db.all(
-      `SELECT ai.id, ai.activityId, ai.day, ai.createdAt
+      `SELECT ai.id, ai.subProjectId, ai.activityId, ai.day, ai.createdAt, a.sortOrder
        FROM activity_instances ai
        JOIN activities a ON a.id = ai.activityId
        WHERE a.projectId = ?
-       ORDER BY ai.day ASC, ai.id ASC`,
+       ORDER BY ai.day ASC, a.sortOrder ASC, ai.id ASC`,
       [projectId]
     );
 
     const activities = activityRows.map(mapActivity);
     const instances = instanceRows.map(mapInstance);
     const instanceMap = {};
+    const subProjectDayMap = {};
 
     for (const instance of instances) {
+      const subprojectKey = String(instance.subProjectId);
+      if (!subProjectDayMap[subprojectKey]) {
+        subProjectDayMap[subprojectKey] = {};
+      }
+      if (!subProjectDayMap[subprojectKey][instance.day]) {
+        subProjectDayMap[subprojectKey][instance.day] = [];
+      }
+      subProjectDayMap[subprojectKey][instance.day].push({
+        instanceId: instance.id,
+        activityId: instance.activityId
+      });
+
+      if (instance.subProjectId !== activeSubProjectId) {
+        continue;
+      }
       const activityKey = String(instance.activityId);
       if (!instanceMap[activityKey]) {
         instanceMap[activityKey] = {};
@@ -683,8 +1004,11 @@ export const createApp = async ({ dbPath } = {}) => {
       project,
       days: buildDayRange(project.startDate, project.endDate),
       activities,
+      subprojects,
+      activeSubProjectId,
       instances,
-      instanceMap
+      instanceMap,
+      subProjectDayMap
     });
   });
 
@@ -699,6 +1023,18 @@ export const createApp = async ({ dbPath } = {}) => {
     const activity = getActivityByProjectAndId(projectId, activityId);
     if (!activity) {
       res.status(404).json({ error: 'Activity not found.' });
+      return;
+    }
+
+    const subProjectId = parseIntegerId(req.body?.subProjectId);
+    if (!subProjectId) {
+      res.status(400).json({ error: 'subProjectId is required.' });
+      return;
+    }
+
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
       return;
     }
 
@@ -722,25 +1058,28 @@ export const createApp = async ({ dbPath } = {}) => {
 
     try {
       await db.run(
-        `INSERT INTO activity_instances (activityId, day, createdAt)
-         VALUES (?, ?, ?)`,
-        [activityId, day, new Date().toISOString()]
+        `INSERT INTO activity_instances (subProjectId, activityId, day, createdAt)
+         VALUES (?, ?, ?, ?)`,
+        [subProjectId, activityId, day, new Date().toISOString()]
       );
     } catch (error) {
       if (isConstraintError(error)) {
-        res.status(409).json({ error: 'An instance already exists for this activity on that day.' });
+        res.status(409).json({
+          error: 'An instance already exists for this sub-project, activity, and day.'
+        });
         return;
       }
       throw error;
     }
 
-    res.status(201).json(getInstanceByActivityAndDay(activityId, day));
+    res.status(201).json(getInstanceBySubprojectActivityAndDay(subProjectId, activityId, day));
   });
 
   app.delete('/api/projects/:projectId/activities/:activityId/instances/:date', async (req, res) => {
     const projectId = parseIntegerId(req.params.projectId);
     const activityId = parseIntegerId(req.params.activityId);
     const day = typeof req.params.date === 'string' ? req.params.date.trim() : '';
+    const subProjectId = parseIntegerId(req.query.subProjectId);
 
     if (!projectId || !activityId) {
       res.status(400).json({ error: 'Invalid project id or activity id.' });
@@ -752,13 +1091,24 @@ export const createApp = async ({ dbPath } = {}) => {
       return;
     }
 
+    if (!subProjectId) {
+      res.status(400).json({ error: 'subProjectId query parameter is required.' });
+      return;
+    }
+
     const activity = getActivityByProjectAndId(projectId, activityId);
     if (!activity) {
       res.status(404).json({ error: 'Activity not found.' });
       return;
     }
 
-    const instance = getInstanceByActivityAndDay(activityId, day);
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    const instance = getInstanceBySubprojectActivityAndDay(subProjectId, activityId, day);
     if (!instance) {
       res.status(404).json({ error: 'Activity instance not found.' });
       return;
@@ -769,6 +1119,7 @@ export const createApp = async ({ dbPath } = {}) => {
     res.json({
       deletedId: instance.id,
       activityId,
+      subProjectId,
       date: day
     });
   });

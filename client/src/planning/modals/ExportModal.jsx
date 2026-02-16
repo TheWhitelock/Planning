@@ -22,7 +22,9 @@ export default function ExportModal({
         <div className="modal-header">
           <div>
             <h2>Export</h2>
-            <p className="card-subtitle">Select which activities to include in the Excel export.</p>
+            <p className="card-subtitle">
+              Select which activities to include. Export contains activity and sub-project schedule sheets.
+            </p>
           </div>
           <button type="button" className="ghost with-icon" onClick={onClose}>
             <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />

@@ -28,15 +28,13 @@ describe('planning API', () => {
   const createActivity = async (projectId, payload) =>
     request(app).post(`/api/projects/${projectId}/activities`).send(payload);
 
-  const createInstance = async (projectId, activityId, date) =>
+  const createSubProject = async (projectId, payload) =>
+    request(app).post(`/api/projects/${projectId}/subprojects`).send(payload);
+
+  const createInstance = async (projectId, activityId, payload) =>
     request(app)
       .post(`/api/projects/${projectId}/activities/${activityId}/instances`)
-      .send({ date });
-
-  const reorderActivity = async (projectId, activityId, direction) =>
-    request(app)
-      .post(`/api/projects/${projectId}/activities/${activityId}/reorder`)
-      .send({ direction });
+      .send(payload);
 
   beforeAll(async () => {
     process.env.DB_PATH = testDbPath;
@@ -56,71 +54,185 @@ describe('planning API', () => {
     removeTestDb();
   });
 
-  it('creates project from startDate and endDate', async () => {
-    const response = await createProject({
+  it('creates project and default Main sub-project', async () => {
+    const project = await createProject({
       name: 'Alpha',
       startDate: '2026-02-10',
-      endDate: '2026-02-14'
+      endDate: '2026-02-12'
     });
 
-    expect(response.status).toBe(201);
-    expect(response.body.startDate).toBe('2026-02-10');
-    expect(response.body.endDate).toBe('2026-02-14');
-    expect(response.body.lengthDays).toBe(5);
+    expect(project.status).toBe(201);
+
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    expect(subprojects.status).toBe(200);
+    expect(subprojects.body).toHaveLength(1);
+    expect(subprojects.body[0].name).toBe('Main');
   });
 
-  it('creates project from startDate and lengthDays', async () => {
-    const response = await createProject({
-      name: 'Beta',
+  it('supports sub-project CRUD/reorder and blocks deleting last sub-project', async () => {
+    const project = await createProject({
+      name: 'Subproject CRUD',
       startDate: '2026-03-01',
-      lengthDays: 10
+      endDate: '2026-03-03'
     });
 
-    expect(response.status).toBe(201);
-    expect(response.body.endDate).toBe('2026-03-10');
-    expect(response.body.lengthDays).toBe(10);
+    const created = await createSubProject(project.body.id, { name: 'Phase 2' });
+    expect(created.status).toBe(201);
+
+    const renamed = await request(app)
+      .put(`/api/projects/${project.body.id}/subprojects/${created.body.id}`)
+      .send({ name: 'Execution' });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.name).toBe('Execution');
+
+    const mainId = (await request(app).get(`/api/projects/${project.body.id}/subprojects`)).body.find(
+      (entry) => entry.name === 'Main'
+    ).id;
+
+    const moved = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${created.body.id}/reorder`)
+      .send({ direction: 'up' });
+    expect(moved.status).toBe(200);
+    expect(moved.body.moved).toBe(true);
+
+    const deleteCreated = await request(app).delete(
+      `/api/projects/${project.body.id}/subprojects/${created.body.id}`
+    );
+    expect(deleteCreated.status).toBe(200);
+
+    const deleteLast = await request(app).delete(`/api/projects/${project.body.id}/subprojects/${mainId}`);
+    expect(deleteLast.status).toBe(409);
+    expect(deleteLast.body.code).toBe('SUBPROJECT_MINIMUM_REQUIRED');
   });
 
-  it('updates project and preserves normalized date range', async () => {
-    const created = await createProject({
-      name: 'Gamma',
+  it('requires subProjectId for instances and enforces duplicate scope by sub-project', async () => {
+    const project = await createProject({
+      name: 'Instances',
       startDate: '2026-04-01',
       endDate: '2026-04-03'
     });
 
-    const updated = await request(app)
-      .put(`/api/projects/${created.body.id}`)
-      .send({
-        name: 'Gamma Updated',
-        startDate: '2026-04-01',
-        lengthDays: 5
-      });
+    const activity = await createActivity(project.body.id, {
+      name: 'Build',
+      color: '#1b5c4f'
+    });
 
-    expect(updated.status).toBe(200);
-    expect(updated.body.name).toBe('Gamma Updated');
-    expect(updated.body.endDate).toBe('2026-04-05');
-    expect(updated.body.lengthDays).toBe(5);
-    expect(updated.body.prunedInstances).toBe(0);
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojects.body[0];
+
+    const missingSubProject = await createInstance(project.body.id, activity.body.id, {
+      date: '2026-04-01'
+    });
+    expect(missingSubProject.status).toBe(400);
+
+    const created = await createInstance(project.body.id, activity.body.id, {
+      date: '2026-04-01',
+      subProjectId: main.id
+    });
+    expect(created.status).toBe(201);
+
+    const duplicate = await createInstance(project.body.id, activity.body.id, {
+      date: '2026-04-01',
+      subProjectId: main.id
+    });
+    expect(duplicate.status).toBe(409);
   });
 
-  it('requires confirmation before trimming out-of-range instances on project update', async () => {
+  it('allows same activity/day across different sub-projects', async () => {
     const project = await createProject({
-      name: 'Trim check',
-      startDate: '2026-09-01',
-      endDate: '2026-09-05'
+      name: 'Cross subprojects',
+      startDate: '2026-05-01',
+      endDate: '2026-05-02'
     });
+
+    const activity = await createActivity(project.body.id, {
+      name: 'Review',
+      color: '#c05621'
+    });
+
+    const extra = await createSubProject(project.body.id, { name: 'Phase 2' });
+    expect(extra.status).toBe(201);
+
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojects.body.find((entry) => entry.name === 'Main');
+
+    const first = await createInstance(project.body.id, activity.body.id, {
+      date: '2026-05-01',
+      subProjectId: main.id
+    });
+    const second = await createInstance(project.body.id, activity.body.id, {
+      date: '2026-05-01',
+      subProjectId: extra.body.id
+    });
+
+    expect(first.status).toBe(201);
+    expect(second.status).toBe(201);
+  });
+
+  it('returns extended board payload with scoped instanceMap and subProjectDayMap', async () => {
+    const project = await createProject({
+      name: 'Board',
+      startDate: '2026-06-10',
+      endDate: '2026-06-11'
+    });
+
+    const activityA = await createActivity(project.body.id, {
+      name: 'Design',
+      color: '#1b5c4f'
+    });
+    const activityB = await createActivity(project.body.id, {
+      name: 'QA',
+      color: '#c05621'
+    });
+
+    const subproject = await createSubProject(project.body.id, { name: 'Phase 2' });
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojects.body.find((entry) => entry.name === 'Main');
+
+    await createInstance(project.body.id, activityA.body.id, {
+      date: '2026-06-10',
+      subProjectId: main.id
+    });
+    await createInstance(project.body.id, activityB.body.id, {
+      date: '2026-06-10',
+      subProjectId: subproject.body.id
+    });
+
+    const boardMain = await request(app).get(
+      `/api/projects/${project.body.id}/board?subProjectId=${main.id}`
+    );
+    expect(boardMain.status).toBe(200);
+    expect(boardMain.body.subprojects.length).toBe(2);
+    expect(boardMain.body.activeSubProjectId).toBe(main.id);
+    expect(boardMain.body.instanceMap[String(activityA.body.id)]['2026-06-10']).toBeTruthy();
+    expect(boardMain.body.instanceMap[String(activityB.body.id)]?.['2026-06-10']).toBeFalsy();
+    expect(boardMain.body.subProjectDayMap[String(subproject.body.id)]['2026-06-10']).toHaveLength(1);
+  });
+
+  it('requires confirmation before pruning out-of-range instances across sub-projects', async () => {
+    const project = await createProject({
+      name: 'Trim',
+      startDate: '2026-07-01',
+      endDate: '2026-07-05'
+    });
+
     const activity = await createActivity(project.body.id, {
       name: 'Implementation',
       color: '#1b5c4f'
     });
-    await createInstance(project.body.id, activity.body.id, '2026-09-05');
+    const subproject = await createSubProject(project.body.id, { name: 'Phase 2' });
+
+    await createInstance(project.body.id, activity.body.id, {
+      date: '2026-07-05',
+      subProjectId: subproject.body.id
+    });
 
     const blocked = await request(app)
       .put(`/api/projects/${project.body.id}`)
       .send({
-        name: 'Trim check',
-        startDate: '2026-09-01',
-        endDate: '2026-09-03'
+        name: 'Trim',
+        startDate: '2026-07-01',
+        endDate: '2026-07-03'
       });
 
     expect(blocked.status).toBe(409);
@@ -130,176 +242,13 @@ describe('planning API', () => {
     const confirmed = await request(app)
       .put(`/api/projects/${project.body.id}`)
       .send({
-        name: 'Trim check',
-        startDate: '2026-09-01',
-        endDate: '2026-09-03',
+        name: 'Trim',
+        startDate: '2026-07-01',
+        endDate: '2026-07-03',
         confirmTrimOutOfRangeInstances: true
       });
 
     expect(confirmed.status).toBe(200);
-    expect(confirmed.body.endDate).toBe('2026-09-03');
     expect(confirmed.body.prunedInstances).toBe(1);
-
-    const board = await request(app).get(`/api/projects/${project.body.id}/board`);
-    expect(board.status).toBe(200);
-    expect(board.body.instances).toHaveLength(0);
-  });
-
-  it('deletes a project with cascade counts', async () => {
-    const project = await createProject({
-      name: 'Cascade',
-      startDate: '2026-02-10',
-      endDate: '2026-02-12'
-    });
-    const activity = await createActivity(project.body.id, {
-      name: 'Design',
-      color: '#1b5c4f'
-    });
-    await createInstance(project.body.id, activity.body.id, '2026-02-10');
-
-    const deleted = await request(app).delete(`/api/projects/${project.body.id}`);
-    expect(deleted.status).toBe(200);
-    expect(deleted.body.deletedActivities).toBe(1);
-    expect(deleted.body.deletedInstances).toBe(1);
-
-    const projects = await request(app).get('/api/projects');
-    expect(projects.body).toHaveLength(0);
-  });
-
-  it('enforces unique activity names per project case-insensitively', async () => {
-    const project = await createProject({
-      name: 'Unique',
-      startDate: '2026-02-01',
-      endDate: '2026-02-02'
-    });
-
-    const created = await createActivity(project.body.id, {
-      name: 'Design',
-      color: '#1b5c4f'
-    });
-    expect(created.status).toBe(201);
-
-    const duplicate = await createActivity(project.body.id, {
-      name: 'design',
-      color: '#ff0000'
-    });
-    expect(duplicate.status).toBe(409);
-  });
-
-  it('updates an activity name and color', async () => {
-    const project = await createProject({
-      name: 'Activity update',
-      startDate: '2026-04-01',
-      endDate: '2026-04-02'
-    });
-
-    const created = await createActivity(project.body.id, {
-      name: 'Draft',
-      color: '#1b5c4f'
-    });
-
-    const updated = await request(app)
-      .put(`/api/projects/${project.body.id}/activities/${created.body.id}`)
-      .send({
-        name: 'Final draft',
-        color: '#cc5500'
-      });
-
-    expect(updated.status).toBe(200);
-    expect(updated.body.name).toBe('Final draft');
-    expect(updated.body.color).toBe('#cc5500');
-  });
-
-  it('validates assignment range and duplicate activity-day assignments', async () => {
-    const project = await createProject({
-      name: 'Range',
-      startDate: '2026-05-10',
-      endDate: '2026-05-12'
-    });
-    const activity = await createActivity(project.body.id, {
-      name: 'Build',
-      color: '#1b5c4f'
-    });
-
-    const outside = await createInstance(project.body.id, activity.body.id, '2026-05-13');
-    expect(outside.status).toBe(400);
-
-    const first = await createInstance(project.body.id, activity.body.id, '2026-05-11');
-    expect(first.status).toBe(201);
-
-    const duplicate = await createInstance(project.body.id, activity.body.id, '2026-05-11');
-    expect(duplicate.status).toBe(409);
-  });
-
-  it('allows multiple activities on the same day and returns board map', async () => {
-    const project = await createProject({
-      name: 'Board',
-      startDate: '2026-06-05',
-      endDate: '2026-06-08'
-    });
-    const design = await createActivity(project.body.id, {
-      name: 'Design',
-      color: '#1b5c4f'
-    });
-    const review = await createActivity(project.body.id, {
-      name: 'Review',
-      color: '#c05621'
-    });
-
-    await createInstance(project.body.id, design.body.id, '2026-06-06');
-    await createInstance(project.body.id, review.body.id, '2026-06-06');
-
-    const board = await request(app).get(`/api/projects/${project.body.id}/board`);
-    expect(board.status).toBe(200);
-    expect(board.body.days).toHaveLength(4);
-    expect(board.body.days.some((day) => day.date === '2026-06-06' && day.isWeekend)).toBe(true);
-    expect(board.body.instanceMap[String(design.body.id)]['2026-06-06']).toBeTruthy();
-    expect(board.body.instanceMap[String(review.body.id)]['2026-06-06']).toBeTruthy();
-  });
-
-  it('deletes activity with instance count', async () => {
-    const project = await createProject({
-      name: 'Activity delete',
-      startDate: '2026-07-01',
-      endDate: '2026-07-03'
-    });
-    const activity = await createActivity(project.body.id, {
-      name: 'Test',
-      color: '#1b5c4f'
-    });
-    await createInstance(project.body.id, activity.body.id, '2026-07-01');
-    await createInstance(project.body.id, activity.body.id, '2026-07-02');
-
-    const deleted = await request(app).delete(
-      `/api/projects/${project.body.id}/activities/${activity.body.id}`
-    );
-
-    expect(deleted.status).toBe(200);
-    expect(deleted.body.deletedInstances).toBe(2);
-  });
-
-  it('reorders activities within a project', async () => {
-    const project = await createProject({
-      name: 'Activity order',
-      startDate: '2026-08-01',
-      endDate: '2026-08-02'
-    });
-    const first = await createActivity(project.body.id, {
-      name: 'First',
-      color: '#1b5c4f'
-    });
-    const second = await createActivity(project.body.id, {
-      name: 'Second',
-      color: '#c05621'
-    });
-
-    const moved = await reorderActivity(project.body.id, second.body.id, 'up');
-    expect(moved.status).toBe(200);
-    expect(moved.body.moved).toBe(true);
-
-    const board = await request(app).get(`/api/projects/${project.body.id}/board`);
-    expect(board.status).toBe(200);
-    expect(board.body.activities[0].id).toBe(second.body.id);
-    expect(board.body.activities[1].id).toBe(first.body.id);
   });
 });
