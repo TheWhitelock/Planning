@@ -240,7 +240,6 @@ const setupApiMock = (state) => {
 
 beforeEach(() => {
   vi.stubGlobal('fetch', vi.fn());
-  vi.spyOn(window, 'confirm').mockReturnValue(true);
 });
 
 afterEach(() => {
@@ -403,6 +402,16 @@ describe('Planning app', () => {
     });
 
     fireEvent.click(screen.getAllByRole('button', { name: /delete sub-project/i })[1]);
+    await screen.findByRole('button', { name: /^Delete$/i });
+    fireEvent.keyDown(window, { key: 'Escape' });
+
+    await waitFor(() => {
+      expect(screen.getByLabelText('Add instance for Phase 2 on 2026-02-10')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getAllByRole('button', { name: /delete sub-project/i })[1]);
+    await screen.findByRole('button', { name: /^Delete$/i });
+    fireEvent.keyDown(window, { key: 'Enter' });
 
     await waitFor(() => {
       expect(screen.queryByLabelText('Add instance for Phase 2 on 2026-02-10')).not.toBeInTheDocument();

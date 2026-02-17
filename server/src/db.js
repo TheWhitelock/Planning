@@ -101,7 +101,7 @@ const ensureBaseTables = (db) => {
   `);
 };
 
-const ensureMainSubprojectPerProject = (db) => {
+const ensureDefaultSubprojectPerProject = (db) => {
   const now = new Date().toISOString();
   db.run(
     `INSERT INTO subprojects (projectId, name, sortOrder, createdAt)
@@ -121,9 +121,8 @@ const ensureMainSubprojectPerProject = (db) => {
        SELECT 1
        FROM subprojects s
        WHERE s.projectId = p.id
-         AND LOWER(s.name) = LOWER(?)
      )`,
-    [DEFAULT_SUBPROJECT_NAME, now, DEFAULT_SUBPROJECT_NAME]
+    [DEFAULT_SUBPROJECT_NAME, now]
   );
   db.run('UPDATE subprojects SET sortOrder = id WHERE sortOrder IS NULL OR sortOrder = 0;');
 };
@@ -222,7 +221,7 @@ export const createDatabase = async (filePath) => {
   db.run('DROP INDEX IF EXISTS idx_clock_events_occurred_at;');
 
   ensureBaseTables(db);
-  ensureMainSubprojectPerProject(db);
+  ensureDefaultSubprojectPerProject(db);
   migrateActivityInstances(db);
   ensureIndexes(db);
   const userVersion = queryAll(db, 'PRAGMA user_version;')[0]?.user_version || 0;

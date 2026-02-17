@@ -86,6 +86,22 @@ export default function ScheduleGrid({
     return () => window.removeEventListener('mousedown', onPointerDown);
   }, []);
 
+  useEffect(() => {
+    if (!openAddMenu) {
+      return undefined;
+    }
+
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        setOpenAddMenu(null);
+      }
+    };
+
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [openAddMenu]);
+
   const setMenuTriggerRef = (key) => (element) => {
     if (element) {
       menuTriggerRefMap.current.set(key, element);
@@ -169,6 +185,16 @@ export default function ScheduleGrid({
       availableActivities
     };
   }, [openAddMenu, board?.subProjectDayMap, board?.activities, activityById]);
+
+  useEffect(() => {
+    if (!activeMenuData || !addMenuRef.current) {
+      return;
+    }
+    const firstAction = addMenuRef.current.querySelector('button');
+    if (firstAction) {
+      firstAction.focus();
+    }
+  }, [activeMenuData]);
 
   const renderCommonHead = () => (
     <thead>
@@ -529,7 +555,7 @@ export default function ScheduleGrid({
                         className="icon"
                         aria-hidden="true"
                       />
-                      {hasExistingEntries ? 'Edit' : 'Add'}
+                      {!isOverviewZoom && (hasExistingEntries ? 'Edit' : 'Add')}
                     </button>
                   </div>
                 </td>

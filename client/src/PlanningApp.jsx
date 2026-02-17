@@ -444,6 +444,13 @@ export default function PlanningApp() {
   const [settingsStatus, setSettingsStatus] = useState('');
   const [showScheduleFullscreen, setShowScheduleFullscreen] = useState(false);
   const [showExportModal, setShowExportModal] = useState(false);
+  const [confirmDialog, setConfirmDialog] = useState({
+    open: false,
+    title: '',
+    message: '',
+    confirmLabel: 'Confirm',
+    cancelLabel: 'Cancel'
+  });
   const [exportDeselectedActivityIds, setExportDeselectedActivityIds] = useState([]);
   const scheduleRowRefs = useRef(new Map());
   const fullscreenScheduleRowRefs = useRef(new Map());
@@ -453,6 +460,7 @@ export default function PlanningApp() {
   const fullscreenAnimationTimersRef = useRef([]);
   const preSwapAnimationTimersRef = useRef([]);
   const pendingReorderSequenceRef = useRef(null);
+  const confirmResolverRef = useRef(null);
 
   const hasDesktopBridge = typeof window !== 'undefined' && window.electronAPI;
 
@@ -664,6 +672,34 @@ export default function PlanningApp() {
     setBoard(result);
   };
 
+  const requestConfirmation = ({
+    title = 'Please confirm',
+    message,
+    confirmLabel = 'Confirm',
+    cancelLabel = 'Cancel'
+  }) =>
+    new Promise((resolve) => {
+      if (confirmResolverRef.current) {
+        confirmResolverRef.current(false);
+      }
+      confirmResolverRef.current = resolve;
+      setConfirmDialog({
+        open: true,
+        title,
+        message,
+        confirmLabel,
+        cancelLabel
+      });
+    });
+
+  const resolveConfirmation = (accepted) => {
+    if (confirmResolverRef.current) {
+      confirmResolverRef.current(accepted);
+      confirmResolverRef.current = null;
+    }
+    setConfirmDialog((current) => ({ ...current, open: false }));
+  };
+
   useEffect(() => {
     loadProjects();
   }, []);
@@ -714,7 +750,8 @@ export default function PlanningApp() {
       showSubProjectModal ||
       showSettings ||
       showScheduleFullscreen ||
-      showExportModal;
+      showExportModal ||
+      confirmDialog.open;
     const previousOverflow = document.body.style.overflow;
 
     if (hasOpenModal) {
@@ -730,23 +767,117 @@ export default function PlanningApp() {
     showSubProjectModal,
     showSettings,
     showScheduleFullscreen,
-    showExportModal
+    showExportModal,
+    confirmDialog.open
   ]);
 
+  useEffect(
+    () => () => {
+      if (confirmResolverRef.current) {
+        confirmResolverRef.current(false);
+        confirmResolverRef.current = null;
+      }
+    },
+    []
+  );
+
   useEffect(() => {
-    if (!showScheduleFullscreen) {
+    const hasKeyboardModal =
+      showProjectModal ||
+      showActivityModal ||
+      showSubProjectModal ||
+      showSettings ||
+      showScheduleFullscreen ||
+      showExportModal ||
+      confirmDialog.open;
+    if (!hasKeyboardModal) {
       return;
     }
 
+    const isTextEntryTarget = (target) => {
+      if (!(target instanceof HTMLElement)) {
+        return false;
+      }
+      const tag = target.tagName;
+      return (
+        target.isContentEditable ||
+        tag === 'INPUT' ||
+        tag === 'TEXTAREA' ||
+        tag === 'SELECT'
+      );
+    };
+
     const onKeyDown = (event) => {
       if (event.key === 'Escape') {
-        setShowScheduleFullscreen(false);
+        event.preventDefault();
+        if (confirmDialog.open) {
+          resolveConfirmation(false);
+          return;
+        }
+        if (showSubProjectModal) {
+          closeSubProjectModal();
+          return;
+        }
+        if (showActivityModal) {
+          closeActivityModal();
+          return;
+        }
+        if (showProjectModal) {
+          setShowProjectModal(false);
+          return;
+        }
+        if (showExportModal) {
+          setShowExportModal(false);
+          return;
+        }
+        if (showSettings) {
+          setShowSettings(false);
+          return;
+        }
+        if (showScheduleFullscreen) {
+          setShowScheduleFullscreen(false);
+        }
+      }
+
+      if (event.key !== 'Enter' || isTextEntryTarget(event.target)) {
+        return;
+      }
+
+      if (confirmDialog.open) {
+        event.preventDefault();
+        resolveConfirmation(true);
+        return;
+      }
+
+      if (showExportModal) {
+        const selectedCount =
+          (board?.activities?.length || 0) - (exportDeselectedActivityIds?.length || 0);
+        if (selectedCount > 0) {
+          event.preventDefault();
+          handleExportSchedule();
+        }
+        return;
+      }
+
+      if (showSettings) {
+        event.preventDefault();
+        handleExportBackup();
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [showScheduleFullscreen]);
+  }, [
+    showProjectModal,
+    showActivityModal,
+    showSubProjectModal,
+    showSettings,
+    showScheduleFullscreen,
+    showExportModal,
+    confirmDialog.open,
+    board?.activities,
+    exportDeselectedActivityIds
+  ]);
 
   useLayoutEffect(() => {
     const rowIds =
@@ -900,9 +1031,11 @@ export default function PlanningApp() {
     if (saveResult.requiresTrimConfirmation) {
       const count = saveResult.outOfRangeInstances || 0;
       const instanceLabel = count === 1 ? 'instance' : 'instances';
-      const confirmTrim = window.confirm(
+      const confirmTrim = await requestConfirmation({
+        title: 'Confirm Project Update',
+        message:
         `Shortening or shifting this project will remove ${count} activity ${instanceLabel} outside the new date range. Continue?`
-      );
+      });
       if (!confirmTrim) {
         setStatus('Project update canceled.');
         return;
@@ -937,9 +1070,12 @@ export default function PlanningApp() {
       return;
     }
 
-    const ok = window.confirm(
+    const ok = await requestConfirmation({
+      title: 'Delete Project',
+      confirmLabel: 'Delete',
+      message:
       `Delete project \"${selectedProject.name}\" and all related sub-projects, activities, and instances?`
-    );
+    });
     if (!ok) {
       return;
     }
@@ -1049,9 +1185,12 @@ export default function PlanningApp() {
       return;
     }
 
-    const ok = window.confirm(
+    const ok = await requestConfirmation({
+      title: 'Delete Activity',
+      confirmLabel: 'Delete',
+      message:
       `Delete activity \"${activity.name}\" and all of its instances?`
-    );
+    });
     if (!ok) {
       return;
     }
@@ -1282,9 +1421,12 @@ export default function PlanningApp() {
       return;
     }
 
-    const ok = window.confirm(
+    const ok = await requestConfirmation({
+      title: 'Delete Sub-project',
+      confirmLabel: 'Delete',
+      message:
       `Delete sub-project \"${subproject.name}\" and all of its activity instances?`
-    );
+    });
     if (!ok) {
       return;
     }
@@ -2002,6 +2144,35 @@ export default function PlanningApp() {
         onClose={closeSubProjectModal}
         onSubmit={handleSubProjectSubmit}
       />
+
+      {confirmDialog.open && (
+        <div className="modal-backdrop" onClick={() => resolveConfirmation(false)}>
+          <div className="modal-card" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2>{confirmDialog.title}</h2>
+                <p className="card-subtitle">{confirmDialog.message}</p>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost"
+                onClick={() => resolveConfirmation(false)}
+              >
+                {confirmDialog.cancelLabel}
+              </button>
+              <button
+                type="button"
+                className="primary"
+                onClick={() => resolveConfirmation(true)}
+              >
+                {confirmDialog.confirmLabel}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <SettingsModal
         show={showSettings}

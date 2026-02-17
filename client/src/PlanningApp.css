@@ -174,13 +174,13 @@ body {
   align-items: center;
   gap: 6px;
   padding: 4px;
-  background: #e7efe6;
+  background: #f1e6d7;
   border-radius: 999px;
 }
 
 .mode-option {
   background: transparent;
-  color: #35573a;
+  color: #6e4b2b;
   border-radius: 999px;
   padding: 8px 12px;
   box-shadow: none;
@@ -532,9 +532,9 @@ body {
 }
 
 .schedule-grid-head-action.is-activity {
-  background: #dcecdf;
-  color: #2f5a3a;
-  border-color: rgba(47, 90, 58, 0.28);
+  background: #f4e7d8;
+  color: #7a4c24;
+  border-color: rgba(122, 76, 36, 0.24);
 }
 
 .schedule-grid-head-action.is-subproject {
@@ -858,7 +858,7 @@ body {
   right: 10px;
   bottom: 10px;
   width: min(280px, 42vw);
-  max-height: min(44vh, 330px);
+  max-height: min(44vh, 500px);
   overflow: auto;
   background: color-mix(in srgb, #fff8ef 88%, transparent);
   border: 1px solid rgba(117, 94, 70, 0.24);
@@ -1106,8 +1106,11 @@ select:focus-visible {
 }
 
 .schedule-pane.is-fullscreen {
+  display: flex;
+  flex-direction: column;
   flex: 1;
   min-height: 0;
+  overflow: hidden;
 }
 
 .schedule-scroll.mode-overview {
@@ -1126,8 +1129,15 @@ select:focus-visible {
 
 .schedule-scroll.mode-overview .instance-cell {
   min-height: 30px;
-  padding: 2px;
+  padding: 0;
   font-size: 0.66rem;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  vertical-align: top;
 }
 
 .schedule-scroll.mode-overview .new-activity-inline {
