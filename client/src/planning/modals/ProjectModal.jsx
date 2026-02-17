@@ -28,42 +28,60 @@ export default function ProjectModal({
           </button>
         </div>
         <form className="project-form" onSubmit={onSubmit}>
-          <label>
-            Project name
-            <input
-              value={projectForm.name}
-              onChange={(event) => onFieldChange('name', event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            Start date
-            <input
-              type="date"
-              value={projectForm.startDate}
-              onChange={(event) => onFieldChange('startDate', event.target.value)}
-              required
-            />
-          </label>
-          <label>
-            End date
-            <input
-              type="date"
-              value={projectForm.endDate}
-              min={projectForm.startDate || undefined}
-              onChange={(event) => onFieldChange('endDate', event.target.value)}
-            />
-          </label>
-          <label>
-            Length (days)
-            <input
-              type="number"
-              min="1"
-              step="1"
-              value={projectForm.lengthDays}
-              onChange={(event) => onFieldChange('lengthDays', event.target.value)}
-            />
-          </label>
+          <div className="project-form-row project-form-row-single">
+            <label>
+              Project name
+              <input
+                value={projectForm.name}
+                placeholder="Enter a name for the project..."
+                onChange={(event) => onFieldChange('name', event.target.value)}
+                required
+              />
+            </label>
+          </div>
+          <div className="project-form-row project-form-row-dates">
+            <label>
+              Start date
+              <input
+                type="date"
+                value={projectForm.startDate}
+                onChange={(event) => onFieldChange('startDate', event.target.value)}
+                required
+              />
+            </label>
+            <label>
+              End date
+              <input
+                type="date"
+                value={projectForm.endDate}
+                min={projectForm.startDate || undefined}
+                onChange={(event) => onFieldChange('endDate', event.target.value)}
+              />
+            </label>
+            <label>
+              Length (days)
+              <input
+                type="number"
+                placeholder="Enter the length of the project..."
+                min="1"
+                step="1"
+                value={projectForm.lengthDays}
+                onChange={(event) => onFieldChange('lengthDays', event.target.value)}
+              />
+            </label>
+          </div>
+          {!isEditingProject && (
+            <div className="project-form-row project-form-row-single">
+              <label>
+                First sub-project name
+                <input
+                  value={projectForm.subProjectName}
+                  placeholder="Enter a name for the first sub-project..."
+                  onChange={(event) => onFieldChange('subProjectName', event.target.value)}
+                />
+              </label>
+            </div>
+          )}
           <div className="modal-actions">
             <button type="button" className="ghost" onClick={onClose}>
               Cancel

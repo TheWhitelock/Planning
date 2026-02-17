@@ -395,6 +395,18 @@ export const createApp = async ({ dbPath } = {}) => {
       return;
     }
 
+    let initialSubProjectName = DEFAULT_SUBPROJECT_NAME;
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'subProjectName')) {
+      const normalizedSubproject = normalizeSubprojectPayload({
+        name: req.body?.subProjectName
+      });
+      if (!normalizedSubproject.value) {
+        res.status(400).json({ error: normalizedSubproject.error });
+        return;
+      }
+      initialSubProjectName = normalizedSubproject.value.name;
+    }
+
     const now = new Date().toISOString();
     await db.run(
       `INSERT INTO projects (name, startDate, endDate, lengthDays, createdAt, updatedAt)
@@ -411,7 +423,11 @@ export const createApp = async ({ dbPath } = {}) => {
 
     const created = getLatestProject();
     if (created) {
-      await createDefaultSubprojectForProject(created.id);
+      await db.run(
+        `INSERT INTO subprojects (projectId, name, sortOrder, createdAt)
+         VALUES (?, ?, 1, ?)`,
+        [created.id, initialSubProjectName, new Date().toISOString()]
+      );
     }
     res.status(201).json(created);
   });

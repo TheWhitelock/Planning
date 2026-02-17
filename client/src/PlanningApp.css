@@ -501,7 +501,7 @@ body {
 
 .schedule-grid thead tr.day-row th {
   position: sticky;
-  top: var(--month-row-height);
+  top: var(--computed-month-row-height, var(--month-row-height));
   z-index: 3;
   height: var(--day-row-height);
   text-wrap: nowrap;
@@ -703,9 +703,9 @@ body {
 
 .instance-cell.is-filled {
   border-style: solid;
-  background: color-mix(in srgb, var(--cell-color, #1b5c4f) 22%, white);
-  border-color: color-mix(in srgb, var(--cell-color, #1b5c4f) 65%, #2b2116);
-  color: #1f1a14;
+  background: var(--cell-color, #1b5c4f);
+  border-color: color-mix(in srgb, var(--cell-color, #1b5c4f) 78%, #2b2116);
+  color: var(--cell-text-color, #ffffff);
   font-weight: 700;
 }
 
@@ -732,7 +732,8 @@ body {
   right: 7px;
   font-size: 0.7rem;
   font-weight: 600;
-  color: rgba(31, 26, 20, 0.8);
+  color: var(--cell-text-color, #ffffff);
+  opacity: 0.88;
   line-height: 1;
 }
 
@@ -761,8 +762,8 @@ body {
 .subproject-instance-block {
   border: 1px solid color-mix(in srgb, var(--cell-color, #1b5c4f) 65%, #2b2116);
   border-radius: 8px;
-  background: color-mix(in srgb, var(--cell-color, #1b5c4f) 24%, white);
-  color: #1f1a14;
+  background: var(--cell-color, #1b5c4f);
+  color: var(--cell-text-color, #ffffff);
   font-weight: 700;
   font-size: 0.76rem;
   line-height: 1.25;
@@ -1159,9 +1160,21 @@ select:focus-visible {
 
 .project-form {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px;
+}
+
+.project-form-row {
+  display: grid;
   gap: 12px;
   align-items: end;
+}
+
+.project-form-row-single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.project-form-row-dates {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .modal-actions {
@@ -1287,5 +1300,9 @@ select:focus-visible {
     width: 100%;
     flex-wrap: wrap;
     align-items: stretch;
+  }
+
+  .project-form-row-dates {
+    grid-template-columns: 1fr;
   }
 }

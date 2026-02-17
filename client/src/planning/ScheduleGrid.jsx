@@ -37,6 +37,43 @@ const buildActivityPositionMetaBySubProjectDayMap = (dayMap) => {
   return meta;
 };
 
+const normalizeHexColor = (value) => {
+  const raw = String(value || '')
+    .trim()
+    .replace(/^#/, '');
+  if (raw.length === 3 && /^[0-9a-fA-F]{3}$/.test(raw)) {
+    return raw
+      .split('')
+      .map((part) => `${part}${part}`)
+      .join('')
+      .toUpperCase();
+  }
+  if (/^[0-9a-fA-F]{6}$/.test(raw)) {
+    return raw.toUpperCase();
+  }
+  return '1B5C4F';
+};
+
+const channelToLinear = (channel) => {
+  const normalized = channel / 255;
+  if (normalized <= 0.03928) {
+    return normalized / 12.92;
+  }
+  return ((normalized + 0.055) / 1.055) ** 2.4;
+};
+
+const getContrastTextColor = (hexColor) => {
+  const normalized = normalizeHexColor(hexColor);
+  const red = Number.parseInt(normalized.slice(0, 2), 16);
+  const green = Number.parseInt(normalized.slice(2, 4), 16);
+  const blue = Number.parseInt(normalized.slice(4, 6), 16);
+  const luminance =
+    0.2126 * channelToLinear(red) +
+    0.7152 * channelToLinear(green) +
+    0.0722 * channelToLinear(blue);
+  return luminance < 0.45 ? '#FFFFFF' : '#1F1A14';
+};
+
 export default function ScheduleGrid({
   board,
   scheduleMode = 'activity',
@@ -62,6 +99,7 @@ export default function ScheduleGrid({
   selectedProjectId,
   bindRowRef
 }) {
+  const tableRef = useRef(null);
   const [openAddMenu, setOpenAddMenu] = useState(null);
   const [menuPosition, setMenuPosition] = useState({ top: 8, left: 8 });
   const addMenuRef = useRef(null);
@@ -196,6 +234,49 @@ export default function ScheduleGrid({
     }
   }, [activeMenuData]);
 
+  useLayoutEffect(() => {
+    const table = tableRef.current;
+    if (!table) {
+      return undefined;
+    }
+
+    const updateMeasuredMonthHeight = () => {
+      const monthRow = table.querySelector('thead tr.month-row');
+      if (!monthRow) {
+        return;
+      }
+      const measured = monthRow.getBoundingClientRect().height;
+      table.style.setProperty('--computed-month-row-height', `${Math.round(measured)}px`);
+    };
+
+    updateMeasuredMonthHeight();
+    const rafId = window.requestAnimationFrame(updateMeasuredMonthHeight);
+    const ResizeObserverCtor =
+      typeof window !== 'undefined' ? window.ResizeObserver : undefined;
+    const resizeObserver = ResizeObserverCtor
+      ? new ResizeObserverCtor(() => updateMeasuredMonthHeight())
+      : null;
+    if (resizeObserver) {
+      resizeObserver.observe(table);
+    }
+    window.addEventListener('resize', updateMeasuredMonthHeight);
+
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+      window.removeEventListener('resize', updateMeasuredMonthHeight);
+    };
+  }, [
+    board?.days?.length,
+    board?.activities?.length,
+    board?.subprojects?.length,
+    scheduleMode,
+    isDetailedZoom,
+    isOverviewZoom
+  ]);
+
   const renderCommonHead = () => (
     <thead>
       <tr className="month-row">
@@ -244,6 +325,7 @@ export default function ScheduleGrid({
   const renderActivityRows = () => (
     <>
       {(board.subprojects || []).map((subproject, subprojectIndex) => {
+        const canDeleteSubProject = (board.subprojects || []).length > 1;
         const subProjectDayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
         return (
           <Fragment key={`${keyPrefix}activity-group-${subproject.id}`}>
@@ -292,8 +374,13 @@ export default function ScheduleGrid({
                       type="button"
                       className="ghost with-icon event-action icon-only-action"
                       onClick={() => onDeleteSubProject(subproject)}
+                      disabled={!canDeleteSubProject}
                       aria-label="Delete sub-project"
-                      title="Delete sub-project"
+                      title={
+                        canDeleteSubProject
+                          ? 'Delete sub-project'
+                          : 'At least one sub-project is required'
+                      }
                     >
                       <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
                     </button>
@@ -387,7 +474,14 @@ export default function ScheduleGrid({
                           className={`instance-cell ${filled ? 'is-filled' : 'is-empty'} ${
                             isDetailedZoom ? 'is-detailed' : ''
                           }`}
-                          style={filled ? { '--cell-color': activity.color } : undefined}
+                          style={
+                            filled
+                              ? {
+                                  '--cell-color': activity.color,
+                                  '--cell-text-color': getContrastTextColor(activity.color)
+                                }
+                              : undefined
+                          }
                           onClick={() => onCellClick(activity.id, day.date, filled, subproject.id)}
                           aria-label={`${subproject.name} ${activity.name} on ${day.date}`}
                           title={filled ? 'Delete activity instance' : 'Add activity instance'}
@@ -426,6 +520,7 @@ export default function ScheduleGrid({
   const renderSubProjectRows = () => (
     <>
       {(board.subprojects || []).map((subproject, index) => {
+        const canDeleteSubProject = (board.subprojects || []).length > 1;
         const subProjectDayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
         const activityPositionMetaById =
           buildActivityPositionMetaBySubProjectDayMap(subProjectDayMap);
@@ -477,8 +572,13 @@ export default function ScheduleGrid({
                     type="button"
                     className="ghost with-icon event-action icon-only-action"
                     onClick={() => onDeleteSubProject(subproject)}
+                    disabled={!canDeleteSubProject}
                     aria-label="Delete sub-project"
-                    title="Delete sub-project"
+                    title={
+                      canDeleteSubProject
+                        ? 'Delete sub-project'
+                        : 'At least one sub-project is required'
+                    }
                   >
                     <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
                   </button>
@@ -524,7 +624,10 @@ export default function ScheduleGrid({
                             className={`subproject-instance-block ${
                               !isDetailedZoom && !isOverviewZoom ? 'is-compact' : ''
                             }`}
-                            style={{ '--cell-color': activity.color }}
+                            style={{
+                              '--cell-color': activity.color,
+                              '--cell-text-color': getContrastTextColor(activity.color)
+                            }}
                             onClick={() =>
                               setOpenAddMenu({ subProjectId: subproject.id, day: day.date })
                             }
@@ -569,7 +672,7 @@ export default function ScheduleGrid({
 
   return (
     <>
-      <table className="schedule-grid">
+      <table className="schedule-grid" ref={tableRef}>
         <colgroup>
           <col className="activity-column-col" />
           {board.days.map((day) => (
@@ -629,6 +732,7 @@ export default function ScheduleGrid({
                     onSubProjectAddInstance(activeMenuData.subProjectId, activeMenuData.day, activity.id);
                   }}
                 >
+                  <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
                   <span className="activity-color" style={{ backgroundColor: activity.color }} />
                   {activity.name}
                 </button>

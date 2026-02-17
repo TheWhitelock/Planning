@@ -143,7 +143,8 @@ const defaultProjectForm = () => ({
   name: '',
   startDate: '',
   endDate: '',
-  lengthDays: ''
+  lengthDays: '',
+  subProjectName: ''
 });
 
 const defaultActivityForm = () => ({
@@ -213,12 +214,15 @@ const normalizeProjectPayload = (form, driver) => {
     return { error: 'Provide a valid end date or length in days.' };
   }
 
+  const subProjectNameRaw = typeof form.subProjectName === 'string' ? form.subProjectName.trim() : '';
+
   return {
     value: {
       name,
       startDate,
       endDate,
-      lengthDays
+      lengthDays,
+      ...(subProjectNameRaw ? { subProjectName: subProjectNameRaw } : {})
     }
   };
 };
@@ -956,7 +960,8 @@ export default function PlanningApp() {
       name: selectedProject.name,
       startDate: selectedProject.startDate,
       endDate: selectedProject.endDate,
-      lengthDays: String(selectedProject.lengthDays)
+      lengthDays: String(selectedProject.lengthDays),
+      subProjectName: ''
     });
     setShowProjectModal(true);
   };
