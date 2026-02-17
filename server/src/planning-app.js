@@ -50,6 +50,14 @@ const addDays = (date, amount) => {
   return next;
 };
 
+const addDaysToDateKey = (dateKey, amount) => {
+  const parsed = parseDateKey(dateKey);
+  if (!parsed) {
+    return null;
+  }
+  return toDateKey(addDays(parsed, amount));
+};
+
 const parseLengthDays = (value) => {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -345,6 +353,33 @@ export const createApp = async ({ dbPath } = {}) => {
         [projectId]
       )
       .map(mapSubproject);
+
+  const getSubprojectByProjectAndName = (projectId, name) => {
+    const rows = db.all(
+      `SELECT id, projectId, name, sortOrder, createdAt
+       FROM subprojects
+       WHERE projectId = ? AND LOWER(name) = LOWER(?)
+       LIMIT 1`,
+      [projectId, name]
+    );
+    return mapSubproject(rows[0]);
+  };
+
+  const resolveDuplicateSubprojectName = (projectId, sourceName) => {
+    const baseName = `${sourceName} (copy)`;
+    if (!getSubprojectByProjectAndName(projectId, baseName)) {
+      return baseName;
+    }
+    let copyIndex = 2;
+    while (copyIndex < 10000) {
+      const candidate = `${sourceName} (copy ${copyIndex})`;
+      if (!getSubprojectByProjectAndName(projectId, candidate)) {
+        return candidate;
+      }
+      copyIndex += 1;
+    }
+    return `${sourceName} (copy ${Date.now()})`;
+  };
 
   const createDefaultSubprojectForProject = async (projectId) => {
     const existingRows = db.all(
@@ -936,6 +971,264 @@ export const createApp = async ({ dbPath } = {}) => {
     res.json({
       deletedId: subProjectId,
       deletedInstances: countRows[0]?.total || 0
+    });
+  });
+
+  app.post('/api/projects/:projectId/subprojects/:subProjectId/duplicate', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    const subProjectId = parseIntegerId(req.params.subProjectId);
+    if (!projectId || !subProjectId) {
+      res.status(400).json({ error: 'Invalid project id or sub-project id.' });
+      return;
+    }
+
+    const sourceSubproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!sourceSubproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    let targetName;
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'name')) {
+      const normalized = normalizeSubprojectPayload(req.body || {});
+      if (!normalized.value) {
+        res.status(400).json({ error: normalized.error });
+        return;
+      }
+      targetName = normalized.value.name;
+    } else {
+      targetName = resolveDuplicateSubprojectName(projectId, sourceSubproject.name);
+    }
+
+    let filteredActivityIds = null;
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, 'activityIds')) {
+      const activityIdsRaw = req.body?.activityIds;
+      if (!Array.isArray(activityIdsRaw)) {
+        res.status(400).json({ error: 'activityIds must be an array of activity ids.' });
+        return;
+      }
+      const parsed = activityIdsRaw.map((value) => parseIntegerId(value));
+      if (parsed.some((value) => !value)) {
+        res.status(400).json({ error: 'activityIds must contain only positive integer ids.' });
+        return;
+      }
+      filteredActivityIds = [...new Set(parsed)];
+      if (filteredActivityIds.length > 0) {
+        const placeholders = filteredActivityIds.map(() => '?').join(', ');
+        const matchingRows = db.all(
+          `SELECT COUNT(*) AS total
+           FROM activities
+           WHERE projectId = ?
+             AND id IN (${placeholders})`,
+          [projectId, ...filteredActivityIds]
+        );
+        const matchingCount = matchingRows[0]?.total || 0;
+        if (matchingCount !== filteredActivityIds.length) {
+          res.status(400).json({
+            error: 'activityIds must reference activities that belong to this project.'
+          });
+          return;
+        }
+      }
+    }
+
+    const nextSortOrderRows = db.all(
+      `SELECT COALESCE(MAX(sortOrder), 0) + 1 AS nextSortOrder
+       FROM subprojects
+       WHERE projectId = ?`,
+      [projectId]
+    );
+    const nextSortOrder = nextSortOrderRows[0]?.nextSortOrder || 1;
+    const createdAt = new Date().toISOString();
+
+    try {
+      await db.run(
+        `INSERT INTO subprojects (projectId, name, sortOrder, createdAt)
+         VALUES (?, ?, ?, ?)`,
+        [projectId, targetName, nextSortOrder, createdAt]
+      );
+    } catch (error) {
+      if (isConstraintError(error)) {
+        res.status(409).json({ error: 'Sub-project name must be unique within this project.' });
+        return;
+      }
+      throw error;
+    }
+
+    const duplicatedSubproject = getLatestSubprojectForProject(projectId);
+    if (!duplicatedSubproject) {
+      res.status(500).json({ error: 'Unable to duplicate sub-project.' });
+      return;
+    }
+
+    const copyFilterClause =
+      filteredActivityIds && filteredActivityIds.length > 0
+        ? ` AND activityId IN (${filteredActivityIds.map(() => '?').join(', ')})`
+        : filteredActivityIds
+          ? ' AND 1 = 0'
+          : '';
+    const copyFilterParams = filteredActivityIds && filteredActivityIds.length > 0 ? filteredActivityIds : [];
+
+    const copiedRows = db.all(
+      `SELECT COUNT(*) AS total
+       FROM activity_instances
+       WHERE subProjectId = ?${copyFilterClause}`,
+      [subProjectId, ...copyFilterParams]
+    );
+    const copiedInstances = copiedRows[0]?.total || 0;
+
+    if (copiedInstances > 0) {
+      await db.run(
+        `INSERT INTO activity_instances (subProjectId, activityId, day, createdAt)
+         SELECT ?, activityId, day, ?
+         FROM activity_instances
+         WHERE subProjectId = ?${copyFilterClause}`,
+        [duplicatedSubproject.id, new Date().toISOString(), subProjectId, ...copyFilterParams]
+      );
+    }
+
+    res.status(201).json({
+      subproject: duplicatedSubproject,
+      copiedInstances
+    });
+  });
+
+  app.post('/api/projects/:projectId/subprojects/:subProjectId/shift', async (req, res) => {
+    const projectId = parseIntegerId(req.params.projectId);
+    const subProjectId = parseIntegerId(req.params.subProjectId);
+    if (!projectId || !subProjectId) {
+      res.status(400).json({ error: 'Invalid project id or sub-project id.' });
+      return;
+    }
+
+    const shiftDays = Number(req.body?.days);
+    if (!Number.isInteger(shiftDays) || shiftDays === 0) {
+      res.status(400).json({ error: 'days must be a non-zero integer.' });
+      return;
+    }
+    const confirmDeleteOutOfRangeInstances = Boolean(req.body?.confirmDeleteOutOfRangeInstances);
+
+    const project = getProjectById(projectId);
+    if (!project) {
+      res.status(404).json({ error: 'Project not found.' });
+      return;
+    }
+
+    const subproject = getSubprojectByProjectAndId(projectId, subProjectId);
+    if (!subproject) {
+      res.status(404).json({ error: 'Sub-project not found.' });
+      return;
+    }
+
+    const sourceInstances = db.all(
+      `SELECT id, activityId, day
+       FROM activity_instances
+       WHERE subProjectId = ?
+       ORDER BY day ASC, activityId ASC, id ASC`,
+      [subProjectId]
+    );
+
+    const totalSourceCount = sourceInstances.length;
+    const outOfRangeInstances = [];
+    for (const instance of sourceInstances) {
+      const targetDay = addDaysToDateKey(instance.day, shiftDays);
+      if (!targetDay || targetDay < project.startDate || targetDay > project.endDate) {
+        outOfRangeInstances.push(instance);
+      }
+    }
+
+    if (outOfRangeInstances.length > 0 && !confirmDeleteOutOfRangeInstances) {
+      res.status(409).json({
+        code: 'SUBPROJECT_SHIFT_OUT_OF_RANGE_DELETE_REQUIRED',
+        outOfRangeInstances: outOfRangeInstances.length,
+        error: `Shifting would remove ${outOfRangeInstances.length} activity instance(s) outside the project date range.`
+      });
+      return;
+    }
+
+    if (outOfRangeInstances.length > 0) {
+      const placeholders = outOfRangeInstances.map(() => '?').join(', ');
+      await db.run(
+        `DELETE FROM activity_instances
+         WHERE id IN (${placeholders})`,
+        outOfRangeInstances.map((entry) => entry.id)
+      );
+    }
+
+    const remainingInstances = db.all(
+      `SELECT id, activityId, day
+       FROM activity_instances
+       WHERE subProjectId = ?
+       ORDER BY day ASC, activityId ASC, id ASC`,
+      [subProjectId]
+    );
+
+    const movable = [];
+    for (const sourceInstance of remainingInstances) {
+      const targetDay = addDaysToDateKey(sourceInstance.day, shiftDays);
+      if (!targetDay || targetDay < project.startDate || targetDay > project.endDate) {
+        continue;
+      }
+      movable.push({
+        ...sourceInstance,
+        targetDay,
+        sourceKey: `${sourceInstance.activityId}::${sourceInstance.day}`,
+        targetKey: `${sourceInstance.activityId}::${targetDay}`
+      });
+    }
+
+    const movingIds = new Set(movable.map((entry) => entry.id));
+    const staticOccupied = new Set(
+      remainingInstances
+        .filter((entry) => !movingIds.has(entry.id))
+        .map((entry) => `${entry.activityId}::${entry.day}`)
+    );
+
+    const blockedIds = new Set();
+    movable.forEach((candidate) => {
+      if (staticOccupied.has(candidate.targetKey)) {
+        blockedIds.add(candidate.id);
+      }
+    });
+
+    let didChange = true;
+    while (didChange) {
+      didChange = false;
+      const blockedSourceKeys = new Set(
+        movable
+          .filter((candidate) => blockedIds.has(candidate.id))
+          .map((candidate) => candidate.sourceKey)
+      );
+      movable.forEach((candidate) => {
+        if (blockedIds.has(candidate.id)) {
+          return;
+        }
+        if (blockedSourceKeys.has(candidate.targetKey)) {
+          blockedIds.add(candidate.id);
+          didChange = true;
+        }
+      });
+    }
+
+    const skippedDuplicates = movable.filter((candidate) => blockedIds.has(candidate.id));
+    const movableSafe = movable.filter((candidate) => !blockedIds.has(candidate.id));
+    const movedInstanceIds = movableSafe.map((entry) => entry.id);
+
+    for (const entry of movableSafe) {
+      await db.run('UPDATE activity_instances SET day = ? WHERE id = ?', [`__shift__${entry.id}`, entry.id]);
+    }
+    for (const entry of movableSafe) {
+      await db.run('UPDATE activity_instances SET day = ? WHERE id = ?', [entry.targetDay, entry.id]);
+    }
+
+    res.json({
+      requestedShiftDays: shiftDays,
+      movedCount: movableSafe.length,
+      skippedOutOfRangeCount: outOfRangeInstances.length,
+      skippedDuplicateCount: skippedDuplicates.length,
+      totalSourceCount,
+      movedInstanceIds,
+      deletedOutOfRangeCount: outOfRangeInstances.length
     });
   });
 

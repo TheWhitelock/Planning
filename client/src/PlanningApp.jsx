@@ -21,8 +21,14 @@ import SubProjectModal from './planning/modals/SubProjectModal.jsx';
 const DATE_KEY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const SCHEDULE_ZOOM_KEY = 'matthiance.scheduleZoom.v2';
 const SCHEDULE_MODE_KEY = 'matthiance.scheduleMode.v1';
+const EXPORT_INCLUDE_UNUSED_KEY = 'matthiance.export.includeUnusedActivities.v1';
 const SCHEDULE_ZOOM_OPTIONS = ['detailed', 'standard', 'overview'];
 const SCHEDULE_MODE_OPTIONS = ['activity', 'subproject'];
+const SUBPROJECT_MODAL_MODES = {
+  create: 'create',
+  edit: 'edit',
+  duplicate: 'duplicate'
+};
 const SCHEDULE_ZOOM_LAYOUT = {
   detailed: { dayWidth: 196, weekendFactor: 0.55 },
   standard: { dayWidth: 58, weekendFactor: 0.5 },
@@ -238,6 +244,8 @@ const getErrorMessage = async (response, fallback) => {
 const isWeekend = (day) => day?.isWeekend || false;
 const exportSelectionStorageKey = (projectId) => `matthiance.export.deselected.${projectId}`;
 const subprojectFilterStorageKey = (projectId) => `matthiance.subprojectFilter.${projectId}`;
+const collapsedSubprojectStorageKey = (projectId) =>
+  `matthiance.activityCollapsedSubprojects.${projectId}`;
 
 const sanitizeFilePart = (value) =>
   String(value || '')
@@ -278,6 +286,61 @@ const getExcelContrastTextArgb = (hexColor) => {
     0.7152 * channelToLinear(green) +
     0.0722 * channelToLinear(blue);
   return luminance < 0.45 ? 'FFFFFFFF' : 'FF1F1A14';
+};
+
+const buildActivityPositionMetaBySubProjectDayMap = (dayMap, allowedActivityIds = null) => {
+  const daysByActivityId = {};
+  Object.entries(dayMap || {}).forEach(([day, entries]) => {
+    (entries || []).forEach((entry) => {
+      if (
+        !entry ||
+        (allowedActivityIds && !allowedActivityIds.has(entry.activityId))
+      ) {
+        return;
+      }
+      if (!daysByActivityId[entry.activityId]) {
+        daysByActivityId[entry.activityId] = [];
+      }
+      daysByActivityId[entry.activityId].push(day);
+    });
+  });
+
+  return Object.entries(daysByActivityId).reduce((acc, [activityId, days]) => {
+    const uniqueDays = [...new Set(days)].sort((left, right) => left.localeCompare(right));
+    acc[activityId] = {
+      totalAssigned: uniqueDays.length,
+      positionByDay: uniqueDays.reduce((positionAcc, day, index) => {
+        positionAcc[day] = index + 1;
+        return positionAcc;
+      }, {})
+    };
+    return acc;
+  }, {});
+};
+
+const packSubProjectInstanceRows = (dayMap, boardDays, selectedActivityIds, activityById) => {
+  const rowSlots = [];
+  boardDays.forEach((day) => {
+    const entries = (dayMap?.[day.date] || []).filter(
+      (entry) =>
+        selectedActivityIds.has(entry.activityId) &&
+        Boolean(activityById[entry.activityId])
+    );
+    entries.forEach((entry) => {
+      let target = rowSlots.find((slot) => !slot.occupiedDays.has(day.date));
+      if (!target) {
+        target = { occupiedDays: new Set(), entries: [] };
+        rowSlots.push(target);
+      }
+      target.occupiedDays.add(day.date);
+      target.entries.push({ day: day.date, activityId: entry.activityId });
+    });
+  });
+
+  if (rowSlots.length === 0) {
+    return [[{ day: null, activityId: null }]];
+  }
+  return rowSlots.map((slot) => slot.entries);
 };
 
 const scheduleAnimationClass = (element, className) => {
@@ -421,6 +484,9 @@ export default function PlanningApp() {
   const [showSubProjectModal, setShowSubProjectModal] = useState(false);
   const [isEditingSubProject, setIsEditingSubProject] = useState(false);
   const [editingSubProjectId, setEditingSubProjectId] = useState(null);
+  const [subProjectModalMode, setSubProjectModalMode] = useState(SUBPROJECT_MODAL_MODES.create);
+  const [duplicatingSubProjectId, setDuplicatingSubProjectId] = useState(null);
+  const [duplicateDeselectedActivityIds, setDuplicateDeselectedActivityIds] = useState([]);
   const [subProjectForm, setSubProjectForm] = useState(defaultSubProjectForm);
   const [activeSubProjectId, setActiveSubProjectId] = useState(null);
   const [scheduleZoom, setScheduleZoom] = useState(() => {
@@ -456,6 +522,24 @@ export default function PlanningApp() {
     cancelLabel: 'Cancel'
   });
   const [exportDeselectedActivityIds, setExportDeselectedActivityIds] = useState([]);
+  const [includeUnusedActivitiesInExport, setIncludeUnusedActivitiesInExport] = useState(() => {
+    if (typeof window === 'undefined') {
+      return true;
+    }
+    const stored = localStorage.getItem(EXPORT_INCLUDE_UNUSED_KEY);
+    if (stored === null) {
+      return true;
+    }
+    try {
+      return JSON.parse(stored) !== false;
+    } catch {
+      return stored !== 'false';
+    }
+  });
+  const [exportScheduleMode, setExportScheduleMode] = useState(scheduleMode);
+  const [exportScheduleZoom, setExportScheduleZoom] = useState(scheduleZoom);
+  const [collapsedSubProjectIds, setCollapsedSubProjectIds] = useState([]);
+  const [pendingSubProjectActionIds, setPendingSubProjectActionIds] = useState([]);
   const scheduleRowRefs = useRef(new Map());
   const fullscreenScheduleRowRefs = useRef(new Map());
   const previousScheduleTopByIdRef = useRef(new Map());
@@ -526,6 +610,61 @@ export default function PlanningApp() {
     }
     localStorage.setItem(subprojectFilterStorageKey(projectId), String(subProjectId));
   };
+  const getPersistedCollapsedSubProjects = (projectId) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return [];
+    }
+    const raw = localStorage.getItem(collapsedSubprojectStorageKey(projectId));
+    if (!raw) {
+      return [];
+    }
+    try {
+      const parsed = JSON.parse(raw);
+      if (!Array.isArray(parsed)) {
+        return [];
+      }
+      return parsed
+        .map((value) => Number(value))
+        .filter((value) => Number.isInteger(value) && value > 0);
+    } catch {
+      return [];
+    }
+  };
+  const persistCollapsedSubProjects = (projectId, collapsedIds) => {
+    if (typeof window === 'undefined' || !projectId) {
+      return;
+    }
+    localStorage.setItem(collapsedSubprojectStorageKey(projectId), JSON.stringify(collapsedIds));
+  };
+  const toggleSubProjectCollapsed = (subProjectId) => {
+    if (!selectedProjectId || !subProjectId) {
+      return;
+    }
+    setCollapsedSubProjectIds((current) => {
+      const currentSet = new Set(current);
+      if (currentSet.has(subProjectId)) {
+        currentSet.delete(subProjectId);
+      } else {
+        currentSet.add(subProjectId);
+      }
+      const next = [...currentSet];
+      persistCollapsedSubProjects(selectedProjectId, next);
+      return next;
+    });
+  };
+  const setSubProjectActionPending = (subProjectId, pending) => {
+    setPendingSubProjectActionIds((current) => {
+      const set = new Set(current);
+      if (pending) {
+        set.add(subProjectId);
+      } else {
+        set.delete(subProjectId);
+      }
+      return [...set];
+    });
+  };
+  const isSubProjectActionPending = (subProjectId) =>
+    pendingSubProjectActionIds.includes(subProjectId);
   const buildSubProjectGroupRowIds = (subProjectId) => [
     `subproject-group-${subProjectId}`,
     ...(board?.activities || []).map((activity) => `activity-${subProjectId}-${activity.id}`)
@@ -709,6 +848,24 @@ export default function PlanningApp() {
   }, []);
 
   useEffect(() => {
+    setCollapsedSubProjectIds(getPersistedCollapsedSubProjects(selectedProjectId));
+  }, [selectedProjectId]);
+
+  useEffect(() => {
+    if (!selectedProjectId || !board?.subprojects) {
+      return;
+    }
+    const validSubProjectIds = new Set((board.subprojects || []).map((subproject) => subproject.id));
+    setCollapsedSubProjectIds((current) => {
+      const next = current.filter((id) => validSubProjectIds.has(id));
+      if (next.length !== current.length) {
+        persistCollapsedSubProjects(selectedProjectId, next);
+      }
+      return next;
+    });
+  }, [selectedProjectId, board?.subprojects]);
+
+  useEffect(() => {
     if (!selectedProjectId) {
       setActiveSubProjectId(null);
       return;
@@ -733,6 +890,16 @@ export default function PlanningApp() {
     }
     localStorage.setItem(SCHEDULE_MODE_KEY, scheduleMode);
   }, [scheduleMode]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return;
+    }
+    localStorage.setItem(
+      EXPORT_INCLUDE_UNUSED_KEY,
+      JSON.stringify(includeUnusedActivitiesInExport)
+    );
+  }, [includeUnusedActivitiesInExport]);
 
   useEffect(
     () => () => {
@@ -1281,6 +1448,9 @@ export default function PlanningApp() {
     setShowSubProjectModal(false);
     setIsEditingSubProject(false);
     setEditingSubProjectId(null);
+    setSubProjectModalMode(SUBPROJECT_MODAL_MODES.create);
+    setDuplicatingSubProjectId(null);
+    setDuplicateDeselectedActivityIds([]);
   };
 
   const openCreateSubProjectModal = () => {
@@ -1288,6 +1458,7 @@ export default function PlanningApp() {
       setStatus('Select or create a project first.');
       return;
     }
+    setSubProjectModalMode(SUBPROJECT_MODAL_MODES.create);
     setIsEditingSubProject(false);
     setEditingSubProjectId(null);
     setSubProjectForm(defaultSubProjectForm());
@@ -1298,10 +1469,36 @@ export default function PlanningApp() {
     if (!subproject) {
       return;
     }
+    setSubProjectModalMode(SUBPROJECT_MODAL_MODES.edit);
     setIsEditingSubProject(true);
     setEditingSubProjectId(subproject.id);
     setSubProjectForm({ name: subproject.name });
     setShowSubProjectModal(true);
+  };
+
+  const openDuplicateSubProjectModal = (subproject) => {
+    if (!subproject) {
+      return;
+    }
+    setSubProjectModalMode(SUBPROJECT_MODAL_MODES.duplicate);
+    setIsEditingSubProject(false);
+    setEditingSubProjectId(null);
+    setDuplicatingSubProjectId(subproject.id);
+    setDuplicateDeselectedActivityIds([]);
+    setSubProjectForm({ name: `${subproject.name} (copy)` });
+    setShowSubProjectModal(true);
+  };
+
+  const toggleDuplicateActivity = (activityId, checked) => {
+    setDuplicateDeselectedActivityIds((current) => {
+      const next = new Set(current);
+      if (checked) {
+        next.delete(activityId);
+      } else {
+        next.add(activityId);
+      }
+      return [...next];
+    });
   };
 
   const handleSubProjectSubmit = async (event) => {
@@ -1317,21 +1514,43 @@ export default function PlanningApp() {
       return;
     }
 
-    if (isEditingSubProject && !editingSubProjectId) {
+    if (
+      subProjectModalMode === SUBPROJECT_MODAL_MODES.edit &&
+      !editingSubProjectId
+    ) {
       setStatus('No sub-project selected for editing.');
       return;
     }
 
-    const endpoint = isEditingSubProject
-      ? `/api/projects/${selectedProjectId}/subprojects/${editingSubProjectId}`
-      : `/api/projects/${selectedProjectId}/subprojects`;
-    const method = isEditingSubProject ? 'PUT' : 'POST';
+    if (
+      subProjectModalMode === SUBPROJECT_MODAL_MODES.duplicate &&
+      !duplicatingSubProjectId
+    ) {
+      setStatus('No sub-project selected for duplication.');
+      return;
+    }
+
+    let endpoint = `/api/projects/${selectedProjectId}/subprojects`;
+    let method = 'POST';
+    let payload = { name };
+
+    if (subProjectModalMode === SUBPROJECT_MODAL_MODES.edit) {
+      endpoint = `/api/projects/${selectedProjectId}/subprojects/${editingSubProjectId}`;
+      method = 'PUT';
+    } else if (subProjectModalMode === SUBPROJECT_MODAL_MODES.duplicate) {
+      endpoint = `/api/projects/${selectedProjectId}/subprojects/${duplicatingSubProjectId}/duplicate`;
+      const selectedActivityIds = (board?.activities || [])
+        .filter((activity) => !duplicateDeselectedActivityIds.includes(activity.id))
+        .map((activity) => activity.id);
+      payload = { name, activityIds: selectedActivityIds };
+      setSubProjectActionPending(duplicatingSubProjectId, true);
+    }
 
     const saved = await withApi(async () => {
       const response = await fetch(apiUrl(endpoint), {
         method,
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name })
+        body: JSON.stringify(payload)
       });
       if (!response.ok) {
         throw new Error(await getErrorMessage(response, 'Unable to save sub-project.'));
@@ -1339,18 +1558,31 @@ export default function PlanningApp() {
       return response.json();
     });
 
+    if (subProjectModalMode === SUBPROJECT_MODAL_MODES.duplicate && duplicatingSubProjectId) {
+      setSubProjectActionPending(duplicatingSubProjectId, false);
+    }
+
     if (!saved) {
       return;
     }
 
     closeSubProjectModal();
     setSubProjectForm(defaultSubProjectForm());
-    if (!isEditingSubProject) {
+    if (subProjectModalMode === SUBPROJECT_MODAL_MODES.create) {
       setActiveSubProjectId(saved.id);
       persistSubProjectFilter(selectedProjectId, saved.id);
     }
-    setStatus(isEditingSubProject ? 'Sub-project updated.' : 'Sub-project added.');
-    await loadBoard(selectedProjectId, isEditingSubProject ? activeSubProjectId : saved.id);
+    if (subProjectModalMode === SUBPROJECT_MODAL_MODES.edit) {
+      setStatus('Sub-project updated.');
+    } else if (subProjectModalMode === SUBPROJECT_MODAL_MODES.duplicate) {
+      setStatus(`Sub-project duplicated (${saved.copiedInstances || 0} instances copied).`);
+    } else {
+      setStatus('Sub-project added.');
+    }
+    await loadBoard(
+      selectedProjectId,
+      subProjectModalMode === SUBPROJECT_MODAL_MODES.create ? saved.id : activeSubProjectId
+    );
   };
 
   const handleMoveSubProject = async (subProjectId, direction) => {
@@ -1456,6 +1688,80 @@ export default function PlanningApp() {
     }
 
     setStatus(`Sub-project deleted (${deleted.deletedInstances} instances removed).`);
+    await loadBoard(selectedProjectId);
+  };
+
+  const handleDuplicateSubProject = async (subproject) => {
+    if (!selectedProjectId || !subproject) {
+      return;
+    }
+    openDuplicateSubProjectModal(subproject);
+  };
+
+  const handleShiftSubProject = async (subProjectId, days) => {
+    if (!selectedProjectId || !subProjectId) {
+      return;
+    }
+
+    const submitShift = async (confirmDeleteOutOfRangeInstances = false) =>
+      withApi(async () => {
+        const response = await fetch(
+          apiUrl(`/api/projects/${selectedProjectId}/subprojects/${subProjectId}/shift`),
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ days, confirmDeleteOutOfRangeInstances })
+          }
+        );
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          if (
+            response.status === 409 &&
+            body?.code === 'SUBPROJECT_SHIFT_OUT_OF_RANGE_DELETE_REQUIRED'
+          ) {
+            return {
+              requiresOutOfRangeDeleteConfirmation: true,
+              outOfRangeInstances: body.outOfRangeInstances || 0
+            };
+          }
+          throw new Error(body?.error || 'Unable to shift sub-project.');
+        }
+        return { shiftResult: body };
+      });
+
+    setSubProjectActionPending(subProjectId, true);
+    let shiftResponse = await submitShift(false);
+    if (!shiftResponse) {
+      setSubProjectActionPending(subProjectId, false);
+      return;
+    }
+
+    if (shiftResponse.requiresOutOfRangeDeleteConfirmation) {
+      const count = shiftResponse.outOfRangeInstances || 0;
+      const instanceLabel = count === 1 ? 'instance' : 'instances';
+      const confirmed = await requestConfirmation({
+        title: 'Confirm Sub-project Shift',
+        message: `Shifting this sub-project will remove ${count} activity ${instanceLabel} outside the project date range. Continue?`,
+        confirmLabel: 'Shift and delete'
+      });
+      if (!confirmed) {
+        setSubProjectActionPending(subProjectId, false);
+        setStatus('Sub-project shift canceled.');
+        return;
+      }
+      shiftResponse = await submitShift(true);
+      if (!shiftResponse || shiftResponse.requiresOutOfRangeDeleteConfirmation) {
+        setSubProjectActionPending(subProjectId, false);
+        return;
+      }
+    }
+
+    setSubProjectActionPending(subProjectId, false);
+    const shiftResult = shiftResponse.shiftResult;
+    const signed = days > 0 ? `+${days}` : String(days);
+    setStatus(
+      `Shifted ${signed} day(s): moved ${shiftResult.movedCount || 0}, removed ${shiftResult.deletedOutOfRangeCount || 0} out-of-range, ${shiftResult.skippedDuplicateCount || 0} duplicates.`
+    );
     await loadBoard(selectedProjectId);
   };
 
@@ -1566,6 +1872,8 @@ export default function PlanningApp() {
       return;
     }
     setExportDeselectedActivityIds(getCurrentExportDeselected(selectedProjectId, board.activities));
+    setExportScheduleMode(scheduleMode);
+    setExportScheduleZoom(scheduleZoom);
     setShowExportModal(true);
   };
 
@@ -1591,10 +1899,39 @@ export default function PlanningApp() {
       return;
     }
 
+    const exportIsDetailedZoom = exportScheduleZoom === 'detailed';
+    const exportIsOverviewZoom = exportScheduleZoom === 'overview';
+    const exportDayHeaderMode = exportIsDetailedZoom
+      ? 'full'
+      : exportIsOverviewZoom
+        ? 'day-only'
+        : 'compact';
+    const exportLayout = SCHEDULE_ZOOM_LAYOUT[exportScheduleZoom] || SCHEDULE_ZOOM_LAYOUT.standard;
+
     const selectedActivities = board.activities.filter(
       (activity) => !exportDeselectedActivityIds.includes(activity.id)
     );
     const selectedActivityIds = new Set(selectedActivities.map((activity) => activity.id));
+    const usedSelectedActivityIds = new Set();
+    if (!includeUnusedActivitiesInExport) {
+      (board.subprojects || []).forEach((subproject) => {
+        const dayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
+        Object.values(dayMap).forEach((entries) => {
+          (entries || []).forEach((entry) => {
+            if (selectedActivityIds.has(entry.activityId)) {
+              usedSelectedActivityIds.add(entry.activityId);
+            }
+          });
+        });
+      });
+    }
+    const selectedActivitiesForLegend =
+      !includeUnusedActivitiesInExport && exportScheduleMode === 'subproject'
+        ? selectedActivities.filter((activity) => usedSelectedActivityIds.has(activity.id))
+        : selectedActivities;
+    const selectedActivityIdsForSubProjectMode = new Set(
+      selectedActivitiesForLegend.map((activity) => activity.id)
+    );
     const activityById = (board.activities || []).reduce((acc, activity) => {
       acc[activity.id] = activity;
       return acc;
@@ -1608,8 +1945,9 @@ export default function PlanningApp() {
       const ExcelJS = await import('exceljs');
       const workbook = new ExcelJS.Workbook();
       const infoSheet = workbook.addWorksheet('Project Info');
-      const worksheet = workbook.addWorksheet('Schedule');
-      const subProjectWorksheet = workbook.addWorksheet('Sub-project Schedule');
+      const worksheet = workbook.addWorksheet(
+        exportScheduleMode === 'activity' ? 'Activity schedule' : 'Sub-project schedule'
+      );
 
       infoSheet.getColumn(1).width = 18;
       infoSheet.getColumn(2).width = 42;
@@ -1626,47 +1964,8 @@ export default function PlanningApp() {
         row.getCell(2).value = value;
       });
 
-      const firstColumnWidth = Math.max(18, Math.round((scheduleLayout.dayWidth || 120) / 8) + 10);
-      const dayColumnWidth = Math.max(4, Math.round((scheduleLayout.dayWidth || 120) / 8));
-      worksheet.getColumn(1).width = firstColumnWidth;
-      for (let index = 0; index < board.days.length; index += 1) {
-        worksheet.getColumn(index + 2).width = dayColumnWidth;
-      }
-
-      const headerRow1 = worksheet.getRow(1);
-      const headerRow2 = worksheet.getRow(2);
-      headerRow1.getCell(1).value = 'Activity';
-      worksheet.mergeCells(1, 1, 2, 1);
-
-      let cursor = 0;
-      while (cursor < board.days.length) {
-        const day = board.days[cursor];
-        const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
-          month: 'long',
-          year: 'numeric',
-          timeZone: 'UTC'
-        });
-        let end = cursor;
-        while (
-          end + 1 < board.days.length &&
-          parseDateKey(board.days[end + 1].date)?.getUTCMonth() === parseDateKey(day.date)?.getUTCMonth() &&
-          parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
-            parseDateKey(day.date)?.getUTCFullYear()
-        ) {
-          end += 1;
-        }
-        const startCol = cursor + 2;
-        const endCol = end + 2;
-        headerRow1.getCell(startCol).value = monthLabel || '';
-        if (endCol > startCol) {
-          worksheet.mergeCells(1, startCol, 1, endCol);
-        }
-        cursor = end + 1;
-      }
-
-      board.days.forEach((day, index) => {
-        headerRow2.getCell(index + 2).value = formatDayHeader(day.date, dayHeaderMode);
-      });
+      const firstColumnWidth = Math.max(18, Math.round((exportLayout.dayWidth || 120) / 8) + 10) * 2;
+      const dayColumnWidth = Math.max(4, Math.round((exportLayout.dayWidth || 120) / 8));
 
       const headerFill = {
         type: 'pattern',
@@ -1684,142 +1983,393 @@ export default function PlanningApp() {
         bottom: { style: 'thin', color: { argb: 'e1e1e1' } },
         right: { style: 'thin', color: { argb: 'e1e1e1' } }
       };
+      const dayIndexByDate = board.days.reduce((acc, day, index) => {
+        acc[day.date] = index;
+        return acc;
+      }, {});
+      const applyWeekendCellStyle = (cell) => {
+        cell.fill = weekendFill;
+        cell.border = border;
+      };
 
-      for (let rowIndex = 1; rowIndex <= 2; rowIndex += 1) {
-        const row = worksheet.getRow(rowIndex);
-        for (let col = 1; col <= board.days.length + 1; col += 1) {
-          const cell = row.getCell(col);
-          cell.fill = headerFill;
-          cell.alignment = { vertical: 'middle', horizontal: 'center' };
-          cell.font = { bold: true };
+      const writeScheduleHeader = ({
+        leftColumnCount,
+        leftHeaderLabel,
+        leftColumnWidths,
+        headerStartRow = 1
+      }) => {
+        leftColumnWidths.forEach((width, index) => {
+          worksheet.getColumn(index + 1).width = width;
+        });
+        for (let index = 0; index < board.days.length; index += 1) {
+          worksheet.getColumn(leftColumnCount + index + 1).width = dayColumnWidth;
         }
-      }
 
-      selectedActivities.forEach((activity, activityIndex) => {
-        const rowNumber = 3 + activityIndex;
-        const row = worksheet.getRow(rowNumber);
-        row.getCell(1).value = activity.name;
-        row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+        const headerRow1 = worksheet.getRow(headerStartRow);
+        const headerRow2 = worksheet.getRow(headerStartRow + 1);
+        headerRow1.getCell(1).value = leftHeaderLabel;
+        worksheet.mergeCells(headerStartRow, 1, headerStartRow + 1, leftColumnCount);
 
-        const map = board.instanceMap?.[String(activity.id)] || {};
-        const assignedDays = Object.keys(map).sort((left, right) => left.localeCompare(right));
-        const totalAssigned = assignedDays.length;
-        const positionByDay = assignedDays.reduce((acc, date, index) => {
-          acc[date] = index + 1;
-          return acc;
-        }, {});
-        const activityColor = normalizeHexColor(activity.color, '1B5C4F');
-        const fillColor = `FF${activityColor}`;
-        const textColor = getExcelContrastTextArgb(activityColor);
+        let cursor = 0;
+        while (cursor < board.days.length) {
+          const day = board.days[cursor];
+          const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
+            month: 'long',
+            year: 'numeric',
+            timeZone: 'UTC'
+          });
+          let end = cursor;
+          while (
+            end + 1 < board.days.length &&
+            parseDateKey(board.days[end + 1].date)?.getUTCMonth() ===
+              parseDateKey(day.date)?.getUTCMonth() &&
+            parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
+              parseDateKey(day.date)?.getUTCFullYear()
+          ) {
+            end += 1;
+          }
+          const startCol = leftColumnCount + cursor + 1;
+          const endCol = leftColumnCount + end + 1;
+          headerRow1.getCell(startCol).value = monthLabel || '';
+          if (endCol > startCol) {
+            worksheet.mergeCells(headerStartRow, startCol, headerStartRow, endCol);
+          }
+          cursor = end + 1;
+        }
 
-        board.days.forEach((day, dayIndex) => {
-          const col = dayIndex + 2;
-          const cell = row.getCell(col);
-          const filled = Boolean(map[day.date]);
+        board.days.forEach((day, index) => {
+          headerRow2.getCell(leftColumnCount + index + 1).value = formatDayHeader(
+            day.date,
+            exportDayHeaderMode
+          );
+        });
 
-          if (filled) {
-            const position = positionByDay[day.date];
-            cell.value = isOverviewZoom
-              ? ''
-              : isDetailedZoom
-                ? `${activity.name} ${position}/${totalAssigned}`
-                : `${position}/${totalAssigned}`;
+        for (let rowIndex = headerStartRow; rowIndex <= headerStartRow + 1; rowIndex += 1) {
+          const row = worksheet.getRow(rowIndex);
+          for (let col = 1; col <= leftColumnCount + board.days.length; col += 1) {
+            const cell = row.getCell(col);
+            cell.fill = headerFill;
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.font = { bold: true };
+          }
+        }
+        return headerStartRow + 2;
+      };
+
+      if (exportScheduleMode === 'activity') {
+        let rowNumber = writeScheduleHeader({
+          leftColumnCount: 1,
+          leftHeaderLabel: 'Sub-project / Activity',
+          leftColumnWidths: [firstColumnWidth]
+        });
+        (board.subprojects || []).forEach((subproject) => {
+          const blockStartRow = rowNumber;
+          const subprojectRow = worksheet.getRow(rowNumber);
+          subprojectRow.getCell(1).value = subproject.name;
+          subprojectRow.getCell(1).font = { bold: true };
+          subprojectRow.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+          subprojectRow.getCell(1).fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFF6EDE1' }
+          };
+          subprojectRow.getCell(1).border = border;
+          board.days.forEach((day, dayIndex) => {
+            const cell = subprojectRow.getCell(dayIndex + 2);
             cell.fill = {
               type: 'pattern',
               pattern: 'solid',
-              fgColor: { argb: fillColor }
+              fgColor: { argb: 'FFF6EDE1' }
             };
-            cell.font = { bold: false, color: { argb: textColor } };
-          } else if (isWeekend(day)) {
-            cell.fill = weekendFill;
             cell.border = border;
+          });
+          rowNumber += 1;
+
+          const dayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
+          const selectedActivitiesForSubProject = !includeUnusedActivitiesInExport
+            ? selectedActivities.filter((activity) =>
+                Object.keys(dayMap).some((date) =>
+                  (dayMap[date] || []).some((entry) => entry.activityId === activity.id)
+                )
+              )
+            : selectedActivities;
+
+          selectedActivitiesForSubProject.forEach((activity) => {
+            const row = worksheet.getRow(rowNumber);
+            row.getCell(1).value = `  ${activity.name}`;
+            row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
+            row.getCell(1).fill = {
+              type: 'pattern',
+              pattern: 'solid',
+              fgColor: { argb: `FF${normalizeHexColor(activity.color, '1B5C4F')}` }
+            };
+            row.getCell(1).font = {
+              bold: false,
+              color: { argb: getExcelContrastTextArgb(activity.color) }
+            };
+            row.getCell(1).border = border;
+
+            const assignedDays = Object.keys(dayMap)
+              .filter((date) =>
+                (dayMap[date] || []).some((entry) => entry.activityId === activity.id)
+              )
+              .sort((left, right) => left.localeCompare(right));
+            const totalAssigned = assignedDays.length;
+            const positionByDay = assignedDays.reduce((acc, date, index) => {
+              acc[date] = index + 1;
+              return acc;
+            }, {});
+            const activityColor = normalizeHexColor(activity.color, '1B5C4F');
+            const fillColor = `FF${activityColor}`;
+            const textColor = getExcelContrastTextArgb(activityColor);
+
+            board.days.forEach((day, dayIndex) => {
+              const col = dayIndex + 2;
+              const cell = row.getCell(col);
+              const filled = Boolean(
+                (dayMap[day.date] || []).some((entry) => entry.activityId === activity.id)
+              );
+
+              if (filled) {
+                const position = positionByDay[day.date];
+                cell.value = exportIsOverviewZoom
+                  ? ''
+                  : exportIsDetailedZoom
+                    ? `${activity.name} ${position}/${totalAssigned}`
+                    : `${position}/${totalAssigned}`;
+                cell.fill = {
+                  type: 'pattern',
+                  pattern: 'solid',
+                  fgColor: { argb: fillColor }
+                };
+                cell.font = { bold: false, color: { argb: textColor } };
+              } else if (isWeekend(day)) {
+                applyWeekendCellStyle(cell);
+              }
+              cell.alignment = {
+                vertical: 'middle',
+                horizontal: 'center',
+                wrapText: exportIsDetailedZoom
+              };
+            });
+            rowNumber += 1;
+          });
+
+          const blockEndRow = rowNumber - 1;
+          const blockLastCol = 1 + board.days.length;
+          for (let blockRow = blockStartRow; blockRow <= blockEndRow; blockRow += 1) {
+            for (let blockCol = 1; blockCol <= blockLastCol; blockCol += 1) {
+              const cell = worksheet.getRow(blockRow).getCell(blockCol);
+              const current = cell.border || {};
+              cell.border = {
+                top:
+                  blockRow === blockStartRow
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.top || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                bottom:
+                  blockRow === blockEndRow
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.bottom || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                left:
+                  blockCol === 1
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.left || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                right:
+                  blockCol === blockLastCol
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.right || { style: 'thin', color: { argb: 'FFE1E1E1' } }
+              };
+            }
           }
-          cell.alignment = { vertical: 'middle', horizontal: 'center', wrapText: isDetailedZoom };
         });
-      });
 
-      worksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
-
-      subProjectWorksheet.getColumn(1).width = firstColumnWidth;
-      for (let index = 0; index < board.days.length; index += 1) {
-        subProjectWorksheet.getColumn(index + 2).width = dayColumnWidth;
-      }
-
-      const subProjectHeaderRow1 = subProjectWorksheet.getRow(1);
-      const subProjectHeaderRow2 = subProjectWorksheet.getRow(2);
-      subProjectHeaderRow1.getCell(1).value = 'Sub-project';
-      subProjectWorksheet.mergeCells(1, 1, 2, 1);
-
-      let subProjectCursor = 0;
-      while (subProjectCursor < board.days.length) {
-        const day = board.days[subProjectCursor];
-        const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
-          month: 'long',
-          year: 'numeric',
-          timeZone: 'UTC'
-        });
-        let end = subProjectCursor;
-        while (
-          end + 1 < board.days.length &&
-          parseDateKey(board.days[end + 1].date)?.getUTCMonth() === parseDateKey(day.date)?.getUTCMonth() &&
-          parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
-            parseDateKey(day.date)?.getUTCFullYear()
-        ) {
-          end += 1;
+        worksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+      } else {
+        if (!includeUnusedActivitiesInExport && selectedActivitiesForLegend.length === 0) {
+          setStatus('No used activities found for the selected export settings.');
+          return;
         }
-        const startCol = subProjectCursor + 2;
-        const endCol = end + 2;
-        subProjectHeaderRow1.getCell(startCol).value = monthLabel || '';
-        if (endCol > startCol) {
-          subProjectWorksheet.mergeCells(1, startCol, 1, endCol);
+        const legendColumnWidth = Math.max(20, firstColumnWidth);
+        const subProjectColumnWidth = Math.max(22, firstColumnWidth * 0.8);
+        worksheet.getColumn(1).width = legendColumnWidth;
+        worksheet.getColumn(2).width = subProjectColumnWidth;
+        for (let index = 0; index < board.days.length; index += 1) {
+          worksheet.getColumn(index + 3).width = dayColumnWidth;
         }
-        subProjectCursor = end + 1;
-      }
 
-      board.days.forEach((day, index) => {
-        subProjectHeaderRow2.getCell(index + 2).value = formatDayHeader(day.date, dayHeaderMode);
-      });
+        const monthRow = worksheet.getRow(1);
+        const dayRow = worksheet.getRow(2);
+        monthRow.getCell(1).value = 'Legend';
+        monthRow.getCell(2).value = 'Sub-project';
+        worksheet.mergeCells(1, 1, 2, 1);
+        worksheet.mergeCells(1, 2, 2, 2);
 
-      for (let rowIndex = 1; rowIndex <= 2; rowIndex += 1) {
-        const row = subProjectWorksheet.getRow(rowIndex);
-        for (let col = 1; col <= board.days.length + 1; col += 1) {
-          const cell = row.getCell(col);
-          cell.fill = headerFill;
-          cell.alignment = { vertical: 'middle', horizontal: 'center' };
-          cell.font = { bold: true };
-        }
-      }
-
-      (board.subprojects || []).forEach((subproject, subprojectIndex) => {
-        const rowNumber = 3 + subprojectIndex;
-        const row = subProjectWorksheet.getRow(rowNumber);
-        row.getCell(1).value = subproject.name;
-        row.getCell(1).alignment = { vertical: 'middle', horizontal: 'left' };
-
-        const dayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
-        board.days.forEach((day, dayIndex) => {
-          const cell = row.getCell(dayIndex + 2);
-          const entries = dayMap[day.date] || [];
-          const labels = entries
-            .filter((entry) => selectedActivityIds.has(entry.activityId))
-            .map((entry) => activityById[entry.activityId]?.name)
-            .filter(Boolean);
-
-          if (labels.length > 0) {
-            cell.value = labels.join('\n');
-            cell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
-            return;
+        let cursor = 0;
+        while (cursor < board.days.length) {
+          const day = board.days[cursor];
+          const monthLabel = parseDateKey(day.date)?.toLocaleDateString(undefined, {
+            month: 'long',
+            year: 'numeric',
+            timeZone: 'UTC'
+          });
+          let end = cursor;
+          while (
+            end + 1 < board.days.length &&
+            parseDateKey(board.days[end + 1].date)?.getUTCMonth() ===
+              parseDateKey(day.date)?.getUTCMonth() &&
+            parseDateKey(board.days[end + 1].date)?.getUTCFullYear() ===
+              parseDateKey(day.date)?.getUTCFullYear()
+          ) {
+            end += 1;
           }
-
-          if (isWeekend(day)) {
-            cell.fill = weekendFill;
-            cell.border = border;
+          const startCol = cursor + 3;
+          const endCol = end + 3;
+          monthRow.getCell(startCol).value = monthLabel || '';
+          if (endCol > startCol) {
+            worksheet.mergeCells(1, startCol, 1, endCol);
           }
-          cell.alignment = { vertical: 'middle', horizontal: 'center' };
-        });
-      });
+          cursor = end + 1;
+        }
 
-      subProjectWorksheet.views = [{ state: 'frozen', xSplit: 1, ySplit: 2 }];
+        board.days.forEach((day, index) => {
+          dayRow.getCell(index + 3).value = formatDayHeader(day.date, exportDayHeaderMode);
+        });
+
+        for (let rowIndex = 1; rowIndex <= 2; rowIndex += 1) {
+          const row = worksheet.getRow(rowIndex);
+          for (let col = 1; col <= board.days.length + 2; col += 1) {
+            const cell = row.getCell(col);
+            cell.fill = headerFill;
+            cell.alignment = { vertical: 'middle', horizontal: 'center' };
+            cell.font = { bold: true };
+          }
+        }
+        monthRow.getCell(2).border = {
+          ...(monthRow.getCell(2).border || {}),
+          left: { style: 'medium', color: { argb: 'FFB9A58A' } }
+        };
+
+        selectedActivitiesForLegend.forEach((activity, index) => {
+          const cell = worksheet.getRow(index + 3).getCell(1);
+          const activityColor = normalizeHexColor(activity.color, '1B5C4F');
+          cell.value = activity.name;
+          cell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: `FF${activityColor}` }
+          };
+          cell.font = { bold: false, color: { argb: getExcelContrastTextArgb(activityColor) } };
+          cell.alignment = { vertical: 'middle', horizontal: 'left' };
+          cell.border = border;
+        });
+
+        let rowNumber = 3;
+
+        (board.subprojects || []).forEach((subproject) => {
+          const dayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
+          const activityPositionMetaById = buildActivityPositionMetaBySubProjectDayMap(
+            dayMap,
+            selectedActivityIdsForSubProjectMode
+          );
+
+          const packedRows = packSubProjectInstanceRows(
+            dayMap,
+            board.days,
+            selectedActivityIdsForSubProjectMode,
+            activityById
+          );
+
+          const startRow = rowNumber;
+          packedRows.forEach((packedRow) => {
+            const row = worksheet.getRow(rowNumber);
+            board.days.forEach((day, dayIndex) => {
+              const cell = row.getCell(dayIndex + 3);
+              if (isWeekend(day)) {
+                applyWeekendCellStyle(cell);
+              }
+              cell.alignment = {
+                vertical: 'middle',
+                horizontal: 'center',
+                wrapText: exportIsDetailedZoom
+              };
+            });
+
+            packedRow.forEach((instanceRow) => {
+              if (!instanceRow.day || !instanceRow.activityId) {
+                return;
+              }
+              const activity = activityById[instanceRow.activityId];
+              const activityColor = normalizeHexColor(activity.color, '1B5C4F');
+              const fillColor = `FF${activityColor}`;
+              const textColor = getExcelContrastTextArgb(activityColor);
+              const dayIndex = dayIndexByDate[instanceRow.day];
+              const targetCell = row.getCell(dayIndex + 3);
+              const positionMeta = activityPositionMetaById[String(instanceRow.activityId)] || {};
+              const position = positionMeta.positionByDay?.[instanceRow.day];
+              const compactValue =
+                typeof position === 'number' && positionMeta.totalAssigned
+                  ? `${position}/${positionMeta.totalAssigned}`
+                  : '';
+
+              targetCell.value = exportIsOverviewZoom
+                ? ''
+                : exportIsDetailedZoom
+                  ? activity.name
+                  : compactValue;
+              targetCell.fill = {
+                type: 'pattern',
+                pattern: 'solid',
+                fgColor: { argb: fillColor }
+              };
+              targetCell.font = { bold: false, color: { argb: textColor } };
+            });
+
+            rowNumber += 1;
+          });
+
+          const endRow = rowNumber - 1;
+          worksheet.mergeCells(startRow, 2, endRow, 2);
+          const mergedCell = worksheet.getRow(startRow).getCell(2);
+          mergedCell.value = subproject.name;
+          mergedCell.alignment = { vertical: 'middle', horizontal: 'left', wrapText: true };
+          mergedCell.font = { bold: true };
+          mergedCell.fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFF6EDE1' }
+          };
+          mergedCell.border = border;
+
+          const blockStartCol = 2;
+          const blockLastCol = 2 + board.days.length;
+          for (let blockRow = startRow; blockRow <= endRow; blockRow += 1) {
+            for (let blockCol = blockStartCol; blockCol <= blockLastCol; blockCol += 1) {
+              const cell = worksheet.getRow(blockRow).getCell(blockCol);
+              const current = cell.border || {};
+              cell.border = {
+                top:
+                  blockRow === startRow
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.top || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                bottom:
+                  blockRow === endRow
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.bottom || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                left:
+                  blockCol === blockStartCol
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.left || { style: 'thin', color: { argb: 'FFE1E1E1' } },
+                right:
+                  blockCol === blockLastCol
+                    ? { style: 'medium', color: { argb: 'FFB9A58A' } }
+                    : current.right || { style: 'thin', color: { argb: 'FFE1E1E1' } }
+              };
+            }
+          }
+        });
+
+        worksheet.views = [{ state: 'frozen', xSplit: 2, ySplit: 2 }];
+      }
 
       const buffer = await workbook.xlsx.writeBuffer();
       const blob = new Blob([buffer], {
@@ -2057,10 +2607,15 @@ export default function PlanningApp() {
                 onMoveSubProject={handleMoveSubProject}
                 onEditSubProject={openEditSubProjectModal}
                 onDeleteSubProject={handleDeleteSubProject}
+                onDuplicateSubProject={handleDuplicateSubProject}
+                onShiftSubProject={handleShiftSubProject}
+                onToggleSubProjectCollapse={toggleSubProjectCollapsed}
                 onCreateSubProject={openCreateSubProjectModal}
                 onSubProjectAddInstance={handleSubProjectAddInstance}
                 onSubProjectDeleteInstance={handleSubProjectBlockDelete}
                 selectedProjectId={selectedProjectId}
+                collapsedSubProjectIds={collapsedSubProjectIds}
+                isSubProjectActionPending={isSubProjectActionPending}
                 bindRowRef={bindScheduleRowRef}
               />
             </div>
@@ -2107,17 +2662,30 @@ export default function PlanningApp() {
         onMoveSubProject={handleMoveSubProject}
         onEditSubProject={openEditSubProjectModal}
         onDeleteSubProject={handleDeleteSubProject}
+        onDuplicateSubProject={handleDuplicateSubProject}
+        onShiftSubProject={handleShiftSubProject}
+        onToggleSubProjectCollapse={toggleSubProjectCollapsed}
         onCreateSubProject={openCreateSubProjectModal}
         onSubProjectAddInstance={handleSubProjectAddInstance}
         onSubProjectDeleteInstance={handleSubProjectBlockDelete}
+        collapsedSubProjectIds={collapsedSubProjectIds}
+        isSubProjectActionPending={isSubProjectActionPending}
         bindRowRef={bindFullscreenScheduleRowRef}
       />
 
       <ExportModal
         show={showExportModal}
         board={board}
+        scheduleMode={exportScheduleMode}
+        scheduleZoom={exportScheduleZoom}
+        modeOptions={SCHEDULE_MODE_OPTIONS}
+        zoomOptions={SCHEDULE_ZOOM_OPTIONS}
         exportDeselectedActivityIds={exportDeselectedActivityIds}
+        includeUnusedActivitiesInExport={includeUnusedActivitiesInExport}
         onToggleActivity={toggleExportActivity}
+        onScheduleModeChange={setExportScheduleMode}
+        onScheduleZoomChange={setExportScheduleZoom}
+        onToggleIncludeUnusedActivities={setIncludeUnusedActivitiesInExport}
         onClose={() => setShowExportModal(false)}
         onExport={handleExportSchedule}
       />
@@ -2138,14 +2706,18 @@ export default function PlanningApp() {
 
       <SubProjectModal
         show={showSubProjectModal}
+        mode={subProjectModalMode}
         isEditingSubProject={isEditingSubProject}
         subProjectForm={subProjectForm}
+        activities={board?.activities || []}
+        duplicateDeselectedActivityIds={duplicateDeselectedActivityIds}
         onChange={(field, value) =>
           setSubProjectForm((current) => ({
             ...current,
             [field]: value
           }))
         }
+        onToggleDuplicateActivity={toggleDuplicateActivity}
         onClose={closeSubProjectModal}
         onSubmit={handleSubProjectSubmit}
       />

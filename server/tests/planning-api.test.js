@@ -251,4 +251,154 @@ describe('planning API', () => {
     expect(confirmed.status).toBe(200);
     expect(confirmed.body.prunedInstances).toBe(1);
   });
+
+  it('duplicates sub-projects with copied instances and resolves duplicate naming', async () => {
+    const project = await createProject({
+      name: 'Duplicate',
+      startDate: '2026-08-01',
+      endDate: '2026-08-05'
+    });
+    const subprojectsBefore = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojectsBefore.body.find((entry) => entry.name === 'Main');
+    const activity = await createActivity(project.body.id, {
+      name: 'Task',
+      color: '#1b5c4f'
+    });
+    const activityTwo = await createActivity(project.body.id, {
+      name: 'Review',
+      color: '#c05621'
+    });
+    await createInstance(project.body.id, activity.body.id, {
+      date: '2026-08-02',
+      subProjectId: main.id
+    });
+    await createInstance(project.body.id, activityTwo.body.id, {
+      date: '2026-08-03',
+      subProjectId: main.id
+    });
+
+    const duplicatedA = await request(app).post(
+      `/api/projects/${project.body.id}/subprojects/${main.id}/duplicate`
+    );
+    expect(duplicatedA.status).toBe(201);
+    expect(duplicatedA.body.subproject.name).toBe('Main (copy)');
+    expect(duplicatedA.body.copiedInstances).toBe(2);
+
+    const duplicatedB = await request(app).post(
+      `/api/projects/${project.body.id}/subprojects/${main.id}/duplicate`
+    );
+    expect(duplicatedB.status).toBe(201);
+    expect(duplicatedB.body.subproject.name).toBe('Main (copy 2)');
+    expect(duplicatedB.body.copiedInstances).toBe(2);
+
+    const duplicatedFiltered = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/duplicate`)
+      .send({ name: 'Main filtered', activityIds: [activityTwo.body.id] });
+    expect(duplicatedFiltered.status).toBe(201);
+    expect(duplicatedFiltered.body.copiedInstances).toBe(1);
+
+    const filteredBoard = await request(app).get(
+      `/api/projects/${project.body.id}/board?subProjectId=${duplicatedFiltered.body.subproject.id}`
+    );
+    expect(filteredBoard.status).toBe(200);
+    expect(filteredBoard.body.instanceMap[String(activity.body.id)]?.['2026-08-02']).toBeFalsy();
+    expect(filteredBoard.body.instanceMap[String(activityTwo.body.id)]?.['2026-08-03']).toBeTruthy();
+
+    const duplicateCustomNameConflict = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/duplicate`)
+      .send({ name: 'Main (copy)' });
+    expect(duplicateCustomNameConflict.status).toBe(409);
+
+    const duplicateInvalidActivity = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/duplicate`)
+      .send({ name: 'Main invalid', activityIds: [99999] });
+    expect(duplicateInvalidActivity.status).toBe(400);
+  });
+
+  it('shifts sub-project instances with partial apply and summary counts', async () => {
+    const project = await createProject({
+      name: 'Shift',
+      startDate: '2026-09-01',
+      endDate: '2026-09-04'
+    });
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojects.body.find((entry) => entry.name === 'Main');
+    const activity = await createActivity(project.body.id, {
+      name: 'Task',
+      color: '#1b5c4f'
+    });
+
+    await createInstance(project.body.id, activity.body.id, {
+      date: '2026-09-01',
+      subProjectId: main.id
+    });
+    await createInstance(project.body.id, activity.body.id, {
+      date: '2026-09-03',
+      subProjectId: main.id
+    });
+    await createInstance(project.body.id, activity.body.id, {
+      date: '2026-09-04',
+      subProjectId: main.id
+    });
+
+    const shiftForwardBlocked = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/shift`)
+      .send({ days: 1 });
+    expect(shiftForwardBlocked.status).toBe(409);
+    expect(shiftForwardBlocked.body.code).toBe('SUBPROJECT_SHIFT_OUT_OF_RANGE_DELETE_REQUIRED');
+    expect(shiftForwardBlocked.body.outOfRangeInstances).toBe(1);
+
+    const shiftForward = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/shift`)
+      .send({ days: 1, confirmDeleteOutOfRangeInstances: true });
+    expect(shiftForward.status).toBe(200);
+    expect(shiftForward.body.movedCount).toBe(1);
+    expect(shiftForward.body.skippedOutOfRangeCount).toBe(1);
+    expect(shiftForward.body.deletedOutOfRangeCount).toBe(1);
+    expect(shiftForward.body.skippedDuplicateCount).toBe(0);
+
+    const boardAfter = await request(app).get(
+      `/api/projects/${project.body.id}/board?subProjectId=${main.id}`
+    );
+    expect(boardAfter.status).toBe(200);
+    expect(boardAfter.body.instanceMap[String(activity.body.id)]['2026-09-02']).toBeTruthy();
+    expect(boardAfter.body.instanceMap[String(activity.body.id)]['2026-09-04']).toBeTruthy();
+
+    const shiftBackward = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/shift`)
+      .send({ days: -1 });
+    expect(shiftBackward.status).toBe(200);
+    expect(shiftBackward.body.requestedShiftDays).toBe(-1);
+  });
+
+  it('validates shift and duplicate route linkage', async () => {
+    const project = await createProject({
+      name: 'Validation',
+      startDate: '2026-10-01',
+      endDate: '2026-10-03'
+    });
+    const otherProject = await createProject({
+      name: 'Other',
+      startDate: '2026-10-01',
+      endDate: '2026-10-03'
+    });
+
+    const subprojects = await request(app).get(`/api/projects/${project.body.id}/subprojects`);
+    const main = subprojects.body.find((entry) => entry.name === 'Main');
+
+    const badShiftDays = await request(app)
+      .post(`/api/projects/${project.body.id}/subprojects/${main.id}/shift`)
+      .send({ days: 0 });
+    expect(badShiftDays.status).toBe(400);
+
+    const wrongProjectDuplicate = await request(app).post(
+      `/api/projects/${otherProject.body.id}/subprojects/${main.id}/duplicate`
+    );
+    expect(wrongProjectDuplicate.status).toBe(404);
+
+    const wrongProjectShift = await request(app)
+      .post(`/api/projects/${otherProject.body.id}/subprojects/${main.id}/shift`)
+      .send({ days: 1 });
+    expect(wrongProjectShift.status).toBe(404);
+  });
 });

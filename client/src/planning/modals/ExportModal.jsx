@@ -4,8 +4,16 @@ import { faFileExcel, faXmark } from '@fortawesome/free-solid-svg-icons';
 export default function ExportModal({
   show,
   board,
+  scheduleMode = 'activity',
+  scheduleZoom = 'standard',
+  modeOptions = [],
+  zoomOptions = [],
   exportDeselectedActivityIds,
+  includeUnusedActivitiesInExport = true,
   onToggleActivity,
+  onScheduleModeChange,
+  onScheduleZoomChange,
+  onToggleIncludeUnusedActivities,
   onClose,
   onExport
 }) {
@@ -15,6 +23,7 @@ export default function ExportModal({
 
   const selectedCount =
     (board?.activities?.length || 0) - (exportDeselectedActivityIds?.length || 0);
+  const modeLabel = scheduleMode === 'activity' ? 'activity mode' : 'sub-project mode';
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -23,13 +32,67 @@ export default function ExportModal({
           <div>
             <h2>Export</h2>
             <p className="card-subtitle">
-              Select which activities to include. Export contains activity and sub-project schedule sheets.
+              Configure the export layout, then choose which activities to include.
             </p>
           </div>
           <button type="button" className="ghost with-icon" onClick={onClose}>
             <FontAwesomeIcon icon={faXmark} className="icon" aria-hidden="true" />
           </button>
         </div>
+        <section className="export-settings-card">
+          <div className="export-settings-row">
+            <span className="export-settings-label">Schedule mode</span>
+            <div className="mode-toggle" role="group" aria-label="Export schedule mode">
+              {modeOptions.map((option) => (
+                <button
+                  key={`export-mode-${option}`}
+                  type="button"
+                  className={`mode-option ${scheduleMode === option ? 'is-active' : ''}`}
+                  onClick={() => onScheduleModeChange?.(option)}
+                >
+                  {option === 'activity' ? 'Activity mode' : 'Sub-project mode'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="export-settings-row">
+            <span className="export-settings-label">Viewing mode</span>
+            <div className="zoom-toggle" role="group" aria-label="Export viewing mode">
+              {zoomOptions.map((option) => (
+                <button
+                  key={`export-zoom-${option}`}
+                  type="button"
+                  className={`zoom-option ${scheduleZoom === option ? 'is-active' : ''}`}
+                  onClick={() => onScheduleZoomChange?.(option)}
+                >
+                  {option === 'detailed' ? 'Detailed' : option === 'standard' ? 'Standard' : 'Overview'}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="export-settings-row">
+            <span className="export-settings-label">Unused activities</span>
+            <div className="mode-toggle" role="group" aria-label="Export unused activities option">
+              <button
+                type="button"
+                className={`mode-option ${includeUnusedActivitiesInExport ? 'is-active' : ''}`}
+                onClick={() => onToggleIncludeUnusedActivities?.(true)}
+              >
+                Include
+              </button>
+              <button
+                type="button"
+                className={`mode-option ${!includeUnusedActivitiesInExport ? 'is-active' : ''}`}
+                onClick={() => onToggleIncludeUnusedActivities?.(false)}
+              >
+                Exclude
+              </button>
+            </div>
+          </div>
+        </section>
+        {/* <p className="card-subtitle">
+          Select activities to include in the export ({selectedCount} selected):
+        </p>
         <div className="export-activity-list">
           {(board?.activities || []).map((activity) => {
             const checked = !exportDeselectedActivityIds.includes(activity.id);
@@ -50,7 +113,7 @@ export default function ExportModal({
               </label>
             );
           })}
-        </div>
+        </div> */}
         <div className="modal-actions">
           <button type="button" className="ghost" onClick={onClose}>
             Cancel

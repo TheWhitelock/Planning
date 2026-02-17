@@ -2,8 +2,14 @@ import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState } from 
 import { createPortal } from 'react-dom';
 import { FontAwesomeIcon } from '@fortawesome/react-fontawesome';
 import {
+  faArrowLeft,
+  faArrowRight,
   faArrowDown,
   faArrowUp,
+  faChevronDown,
+  faChevronRight,
+  faCopy,
+  faEllipsisVertical,
   faPen,
   faPlus,
   faTrash
@@ -93,20 +99,30 @@ export default function ScheduleGrid({
   onMoveSubProject,
   onEditSubProject,
   onDeleteSubProject,
+  onDuplicateSubProject,
+  onShiftSubProject,
+  onToggleSubProjectCollapse,
   onCreateSubProject,
   onSubProjectAddInstance,
   onSubProjectDeleteInstance,
   selectedProjectId,
+  collapsedSubProjectIds = [],
+  isSubProjectActionPending = () => false,
   bindRowRef
 }) {
   const tableRef = useRef(null);
   const [openAddMenu, setOpenAddMenu] = useState(null);
   const [menuPosition, setMenuPosition] = useState({ top: 8, left: 8 });
+  const [openRowMenu, setOpenRowMenu] = useState(null);
+  const [rowMenuPosition, setRowMenuPosition] = useState({ top: 8, left: 8 });
   const addMenuRef = useRef(null);
+  const rowMenuRef = useRef(null);
   const menuTriggerRefMap = useRef(new Map());
+  const rowMenuTriggerRefMap = useRef(new Map());
 
   useEffect(() => {
     setOpenAddMenu(null);
+    setOpenRowMenu(null);
   }, [scheduleMode, board?.project?.id]);
 
   useEffect(() => {
@@ -114,10 +130,17 @@ export default function ScheduleGrid({
       if (addMenuRef.current?.contains(event.target)) {
         return;
       }
+      if (rowMenuRef.current?.contains(event.target)) {
+        return;
+      }
       if (event.target?.closest?.('.subproject-add-menu-wrap')) {
         return;
       }
+      if (event.target?.closest?.('.row-action-menu-trigger-wrap')) {
+        return;
+      }
       setOpenAddMenu(null);
+      setOpenRowMenu(null);
     };
 
     window.addEventListener('mousedown', onPointerDown);
@@ -125,7 +148,7 @@ export default function ScheduleGrid({
   }, []);
 
   useEffect(() => {
-    if (!openAddMenu) {
+    if (!openAddMenu && !openRowMenu) {
       return undefined;
     }
 
@@ -133,12 +156,13 @@ export default function ScheduleGrid({
       if (event.key === 'Escape') {
         event.preventDefault();
         setOpenAddMenu(null);
+        setOpenRowMenu(null);
       }
     };
 
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [openAddMenu]);
+  }, [openAddMenu, openRowMenu]);
 
   const setMenuTriggerRef = (key) => (element) => {
     if (element) {
@@ -146,6 +170,14 @@ export default function ScheduleGrid({
       return;
     }
     menuTriggerRefMap.current.delete(key);
+  };
+
+  const setRowMenuTriggerRef = (key) => (element) => {
+    if (element) {
+      rowMenuTriggerRefMap.current.set(key, element);
+      return;
+    }
+    rowMenuTriggerRefMap.current.delete(key);
   };
 
   useLayoutEffect(() => {
@@ -192,6 +224,49 @@ export default function ScheduleGrid({
     };
   }, [openAddMenu]);
 
+  useLayoutEffect(() => {
+    if (!openRowMenu) {
+      return;
+    }
+
+    const triggerElement = rowMenuTriggerRefMap.current.get(openRowMenu.key);
+    if (!triggerElement) {
+      return;
+    }
+
+    const positionMenu = () => {
+      const rect = triggerElement.getBoundingClientRect();
+      const viewportPadding = 8;
+      const estimatedWidth = 224;
+      const measuredHeight = rowMenuRef.current?.offsetHeight || 260;
+      const menuHeight = Math.max(120, measuredHeight);
+
+      let left = rect.right - estimatedWidth;
+      if (left + estimatedWidth > window.innerWidth - viewportPadding) {
+        left = window.innerWidth - estimatedWidth - viewportPadding;
+      }
+      left = Math.max(viewportPadding, left);
+
+      const preferredTop = rect.bottom + 4;
+      const fitsBelow = preferredTop + menuHeight <= window.innerHeight - viewportPadding;
+      let top = fitsBelow ? preferredTop : rect.top - menuHeight - 4;
+      top = Math.max(viewportPadding, top);
+
+      setRowMenuPosition({ top, left });
+    };
+
+    positionMenu();
+    const rafId = window.requestAnimationFrame(positionMenu);
+    const onWindowChange = () => positionMenu();
+    window.addEventListener('resize', onWindowChange);
+    window.addEventListener('scroll', onWindowChange, true);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', onWindowChange);
+      window.removeEventListener('scroll', onWindowChange, true);
+    };
+  }, [openRowMenu]);
+
   const activityById = useMemo(
     () =>
       (board?.activities || []).reduce((acc, activity) => {
@@ -233,6 +308,40 @@ export default function ScheduleGrid({
       firstAction.focus();
     }
   }, [activeMenuData]);
+
+  useEffect(() => {
+    if (!openRowMenu || !rowMenuRef.current) {
+      return;
+    }
+    const firstAction = rowMenuRef.current.querySelector('button');
+    if (firstAction) {
+      firstAction.focus();
+    }
+  }, [openRowMenu]);
+
+  const openRowActionsMenu = (rowMenuPayload, key) => {
+    setOpenRowMenu((current) => {
+      if (current?.key === key) {
+        return null;
+      }
+      return { key, ...rowMenuPayload };
+    });
+  };
+
+  const renderRowActionMenuTrigger = (key, menuPayload, label) => (
+    <span className="row-action-menu-trigger-wrap">
+      <button
+        type="button"
+        className="ghost with-icon event-action icon-only-action"
+        ref={setRowMenuTriggerRef(key)}
+        onClick={() => openRowActionsMenu(menuPayload, key)}
+        aria-label={label}
+        title={label}
+      >
+        <FontAwesomeIcon icon={faEllipsisVertical} className="icon" aria-hidden="true" />
+      </button>
+    </span>
+  );
 
   useLayoutEffect(() => {
     const table = tableRef.current;
@@ -326,6 +435,8 @@ export default function ScheduleGrid({
     <>
       {(board.subprojects || []).map((subproject, subprojectIndex) => {
         const canDeleteSubProject = (board.subprojects || []).length > 1;
+        const collapsed = collapsedSubProjectIds.includes(subproject.id);
+        const subProjectPending = isSubProjectActionPending(subproject.id);
         const subProjectDayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
         return (
           <Fragment key={`${keyPrefix}activity-group-${subproject.id}`}>
@@ -335,6 +446,19 @@ export default function ScheduleGrid({
             >
               <th>
                 <div className="schedule-activity-head">
+                  <button
+                    type="button"
+                    className="ghost with-icon event-action icon-only-action subproject-collapse-toggle"
+                    onClick={() => onToggleSubProjectCollapse(subproject.id)}
+                    aria-label={collapsed ? 'Expand sub-project' : 'Collapse sub-project'}
+                    title={collapsed ? 'Expand sub-project' : 'Collapse sub-project'}
+                  >
+                    <FontAwesomeIcon
+                      icon={collapsed ? faChevronRight : faChevronDown}
+                      className="icon"
+                      aria-hidden="true"
+                    />
+                  </button>
                   <span className="activity-label subproject-group-label">
                     <span className="activity-name" title={subproject.name}>
                       {subproject.name}
@@ -344,46 +468,62 @@ export default function ScheduleGrid({
                     <button
                       type="button"
                       className="ghost with-icon event-action icon-only-action"
-                      onClick={() => onMoveSubProject(subproject.id, 'up')}
-                      disabled={subprojectIndex === 0}
-                      aria-label="Move sub-project up"
-                      title="Move sub-project up"
+                      onClick={() => onShiftSubProject(subproject.id, -1)}
+                      aria-label="Shift sub-project back one day"
+                      title="Shift sub-project back one day"
+                      disabled={subProjectPending}
                     >
-                      <FontAwesomeIcon icon={faArrowUp} className="icon" aria-hidden="true" />
+                      <FontAwesomeIcon icon={faArrowLeft} className="icon" aria-hidden="true" />
                     </button>
                     <button
                       type="button"
                       className="ghost with-icon event-action icon-only-action"
-                      onClick={() => onMoveSubProject(subproject.id, 'down')}
-                      disabled={subprojectIndex === (board.subprojects || []).length - 1}
-                      aria-label="Move sub-project down"
-                      title="Move sub-project down"
+                      onClick={() => onShiftSubProject(subproject.id, 1)}
+                      aria-label="Shift sub-project forward one day"
+                      title="Shift sub-project forward one day"
+                      disabled={subProjectPending}
                     >
-                      <FontAwesomeIcon icon={faArrowDown} className="icon" aria-hidden="true" />
+                      <FontAwesomeIcon icon={faArrowRight} className="icon" aria-hidden="true" />
                     </button>
-                    <button
-                      type="button"
-                      className="ghost with-icon event-action icon-only-action"
-                      onClick={() => onEditSubProject(subproject)}
-                      aria-label="Edit sub-project"
-                      title="Edit sub-project"
-                    >
-                      <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-                    </button>
-                    <button
-                      type="button"
-                      className="ghost with-icon event-action icon-only-action"
-                      onClick={() => onDeleteSubProject(subproject)}
-                      disabled={!canDeleteSubProject}
-                      aria-label="Delete sub-project"
-                      title={
-                        canDeleteSubProject
-                          ? 'Delete sub-project'
-                          : 'At least one sub-project is required'
-                      }
-                    >
-                      <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-                    </button>
+                    {renderRowActionMenuTrigger(
+                      `${keyPrefix}subproject-group-${subproject.id}-actions`,
+                      {
+                        items: [
+                          {
+                            label: 'Edit sub-project',
+                            icon: faPen,
+                            onSelect: () => onEditSubProject(subproject)
+                          },
+                          {
+                            label: 'Duplicate sub-project',
+                            icon: faCopy,
+                            disabled: subProjectPending,
+                            onSelect: () => onDuplicateSubProject(subproject)
+                          },
+                          {
+                            label: 'Move sub-project up',
+                            icon: faArrowUp,
+                            disabled: subprojectIndex === 0,
+                            onSelect: () => onMoveSubProject(subproject.id, 'up')
+                          },
+                          {
+                            label: 'Move sub-project down',
+                            icon: faArrowDown,
+                            disabled: subprojectIndex === (board.subprojects || []).length - 1,
+                            onSelect: () => onMoveSubProject(subproject.id, 'down')
+                          },
+                          { type: 'divider' },
+                          {
+                            label: 'Delete sub-project',
+                            icon: faTrash,
+                            disabled: !canDeleteSubProject,
+                            danger: true,
+                            onSelect: () => onDeleteSubProject(subproject)
+                          }
+                        ]
+                      },
+                      'Open sub-project actions'
+                    )}
                   </div>
                 </div>
               </th>
@@ -396,7 +536,8 @@ export default function ScheduleGrid({
                 </td>
               ))}
             </tr>
-            {(board.activities || []).map((activity, activityIndex) => {
+            {!collapsed &&
+              (board.activities || []).map((activity, activityIndex) => {
               const assignedDays = Object.keys(subProjectDayMap)
                 .filter((date) =>
                   (subProjectDayMap[date] || []).some((entry) => entry.activityId === activity.id)
@@ -418,44 +559,38 @@ export default function ScheduleGrid({
                         </span>
                       </span>
                       <div className="schedule-row-actions">
-                        <button
-                          type="button"
-                          className="ghost with-icon event-action icon-only-action"
-                          onClick={() => onMoveActivity(activity.id, 'up')}
-                          disabled={activityIndex === 0}
-                          aria-label="Move activity up"
-                          title="Move activity up"
-                        >
-                          <FontAwesomeIcon icon={faArrowUp} className="icon" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost with-icon event-action icon-only-action"
-                          onClick={() => onMoveActivity(activity.id, 'down')}
-                          disabled={activityIndex === (board.activities || []).length - 1}
-                          aria-label="Move activity down"
-                          title="Move activity down"
-                        >
-                          <FontAwesomeIcon icon={faArrowDown} className="icon" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost with-icon event-action icon-only-action"
-                          onClick={() => onEditActivity(activity)}
-                          aria-label="Edit activity"
-                          title="Edit activity"
-                        >
-                          <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-                        </button>
-                        <button
-                          type="button"
-                          className="ghost with-icon event-action icon-only-action"
-                          onClick={() => onDeleteActivity(activity)}
-                          aria-label="Delete activity"
-                          title="Delete activity"
-                        >
-                          <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-                        </button>
+                        {renderRowActionMenuTrigger(
+                          `${keyPrefix}activity-${subproject.id}-${activity.id}-actions`,
+                          {
+                            items: [
+                              {
+                                label: 'Move activity up',
+                                icon: faArrowUp,
+                                disabled: activityIndex === 0,
+                                onSelect: () => onMoveActivity(activity.id, 'up')
+                              },
+                              {
+                                label: 'Move activity down',
+                                icon: faArrowDown,
+                                disabled: activityIndex === (board.activities || []).length - 1,
+                                onSelect: () => onMoveActivity(activity.id, 'down')
+                              },
+                              {
+                                label: 'Edit activity',
+                                icon: faPen,
+                                onSelect: () => onEditActivity(activity)
+                              },
+                              { type: 'divider' },
+                              {
+                                label: 'Delete activity',
+                                icon: faTrash,
+                                danger: true,
+                                onSelect: () => onDeleteActivity(activity)
+                              }
+                            ]
+                          },
+                          'Open activity actions'
+                        )}
                       </div>
                     </div>
                   </th>
@@ -467,11 +602,11 @@ export default function ScheduleGrid({
                     return (
                       <td
                         key={`${keyPrefix}activity-${subproject.id}-${activity.id}-${day.date}`}
-                        className={isWeekend(day) ? 'is-weekend' : ''}
+                        className={`activity-day-cell ${isWeekend(day) ? 'is-weekend' : ''}`}
                       >
                         <button
                           type="button"
-                          className={`instance-cell ${filled ? 'is-filled' : 'is-empty'} ${
+                          className={`instance-cell ${filled ? 'is-filled' : 'is-empty activity-empty-action'} ${
                             isDetailedZoom ? 'is-detailed' : ''
                           }`}
                           style={
@@ -499,10 +634,11 @@ export default function ScheduleGrid({
                             ) : (
                               `${position}/${totalAssigned}`
                             )
-                          ) : isOverviewZoom ? (
-                            '+'
                           ) : (
-                            'Add'
+                            <>
+                              <FontAwesomeIcon icon={faPlus} className="icon" aria-hidden="true" />
+                              {!isOverviewZoom && 'Add'}
+                            </>
                           )}
                         </button>
                       </td>
@@ -521,6 +657,7 @@ export default function ScheduleGrid({
     <>
       {(board.subprojects || []).map((subproject, index) => {
         const canDeleteSubProject = (board.subprojects || []).length > 1;
+        const subProjectPending = isSubProjectActionPending(subproject.id);
         const subProjectDayMap = board.subProjectDayMap?.[String(subproject.id)] || {};
         const activityPositionMetaById =
           buildActivityPositionMetaBySubProjectDayMap(subProjectDayMap);
@@ -542,46 +679,62 @@ export default function ScheduleGrid({
                   <button
                     type="button"
                     className="ghost with-icon event-action icon-only-action"
-                    onClick={() => onMoveSubProject(subproject.id, 'up')}
-                    disabled={index === 0}
-                    aria-label="Move sub-project up"
-                    title="Move sub-project up"
+                    onClick={() => onShiftSubProject(subproject.id, -1)}
+                    aria-label="Shift sub-project back one day"
+                    title="Shift sub-project back one day"
+                    disabled={subProjectPending}
                   >
-                    <FontAwesomeIcon icon={faArrowUp} className="icon" aria-hidden="true" />
+                    <FontAwesomeIcon icon={faArrowLeft} className="icon" aria-hidden="true" />
                   </button>
                   <button
                     type="button"
                     className="ghost with-icon event-action icon-only-action"
-                    onClick={() => onMoveSubProject(subproject.id, 'down')}
-                    disabled={index === (board.subprojects || []).length - 1}
-                    aria-label="Move sub-project down"
-                    title="Move sub-project down"
+                    onClick={() => onShiftSubProject(subproject.id, 1)}
+                    aria-label="Shift sub-project forward one day"
+                    title="Shift sub-project forward one day"
+                    disabled={subProjectPending}
                   >
-                    <FontAwesomeIcon icon={faArrowDown} className="icon" aria-hidden="true" />
+                    <FontAwesomeIcon icon={faArrowRight} className="icon" aria-hidden="true" />
                   </button>
-                  <button
-                    type="button"
-                    className="ghost with-icon event-action icon-only-action"
-                    onClick={() => onEditSubProject(subproject)}
-                    aria-label="Edit sub-project"
-                    title="Edit sub-project"
-                  >
-                    <FontAwesomeIcon icon={faPen} className="icon" aria-hidden="true" />
-                  </button>
-                  <button
-                    type="button"
-                    className="ghost with-icon event-action icon-only-action"
-                    onClick={() => onDeleteSubProject(subproject)}
-                    disabled={!canDeleteSubProject}
-                    aria-label="Delete sub-project"
-                    title={
-                      canDeleteSubProject
-                        ? 'Delete sub-project'
-                        : 'At least one sub-project is required'
-                    }
-                  >
-                    <FontAwesomeIcon icon={faTrash} className="icon" aria-hidden="true" />
-                  </button>
+                  {renderRowActionMenuTrigger(
+                    `${keyPrefix}subproject-${subproject.id}-actions`,
+                    {
+                      items: [
+                        {
+                          label: 'Edit sub-project',
+                          icon: faPen,
+                          onSelect: () => onEditSubProject(subproject)
+                        },
+                        {
+                          label: 'Duplicate sub-project',
+                          icon: faCopy,
+                          disabled: subProjectPending,
+                          onSelect: () => onDuplicateSubProject(subproject)
+                        },
+                        {
+                          label: 'Move sub-project up',
+                          icon: faArrowUp,
+                          disabled: index === 0,
+                          onSelect: () => onMoveSubProject(subproject.id, 'up')
+                        },
+                        {
+                          label: 'Move sub-project down',
+                          icon: faArrowDown,
+                          disabled: index === (board.subprojects || []).length - 1,
+                          onSelect: () => onMoveSubProject(subproject.id, 'down')
+                        },
+                        { type: 'divider' },
+                        {
+                          label: 'Delete sub-project',
+                          icon: faTrash,
+                          disabled: !canDeleteSubProject,
+                          danger: true,
+                          onSelect: () => onDeleteSubProject(subproject)
+                        }
+                      ]
+                    },
+                    'Open sub-project actions'
+                  )}
                 </div>
               </div>
             </th>
@@ -738,6 +891,47 @@ export default function ScheduleGrid({
                 </button>
               ))
             )}
+          </div>,
+          document.body
+        )}
+      {openRowMenu &&
+        createPortal(
+          <div
+            ref={rowMenuRef}
+            className="row-action-menu"
+            role="menu"
+            style={{
+              position: 'fixed',
+              top: `${rowMenuPosition.top}px`,
+              left: `${rowMenuPosition.left}px`
+            }}
+          >
+            {(openRowMenu.items || []).map((item, index) => {
+              if (item?.type === 'divider') {
+                return (
+                  <span
+                    key={`${openRowMenu.key}-divider-${index}`}
+                    className="row-action-menu-divider"
+                    aria-hidden="true"
+                  />
+                );
+              }
+              return (
+                <button
+                  key={`${openRowMenu.key}-item-${index}-${item.label}`}
+                  type="button"
+                  className={`row-action-menu-item ${item.danger ? 'is-danger' : ''}`}
+                  disabled={Boolean(item.disabled)}
+                  onClick={() => {
+                    setOpenRowMenu(null);
+                    item.onSelect?.();
+                  }}
+                >
+                  {item.icon && <FontAwesomeIcon icon={item.icon} className="icon" aria-hidden="true" />}
+                  {item.label}
+                </button>
+              );
+            })}
           </div>,
           document.body
         )}

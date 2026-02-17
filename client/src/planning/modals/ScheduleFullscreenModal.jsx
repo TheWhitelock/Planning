@@ -32,9 +32,14 @@ export default function ScheduleFullscreenModal({
   onMoveSubProject,
   onEditSubProject,
   onDeleteSubProject,
+  onDuplicateSubProject,
+  onShiftSubProject,
+  onToggleSubProjectCollapse,
   onCreateSubProject,
   onSubProjectAddInstance,
   onSubProjectDeleteInstance,
+  collapsedSubProjectIds,
+  isSubProjectActionPending,
   bindRowRef
 }) {
   if (!show) {
@@ -133,10 +138,15 @@ export default function ScheduleFullscreenModal({
                 onMoveSubProject={onMoveSubProject}
                 onEditSubProject={onEditSubProject}
                 onDeleteSubProject={onDeleteSubProject}
+                onDuplicateSubProject={onDuplicateSubProject}
+                onShiftSubProject={onShiftSubProject}
+                onToggleSubProjectCollapse={onToggleSubProjectCollapse}
                 onCreateSubProject={onCreateSubProject}
                 onSubProjectAddInstance={onSubProjectAddInstance}
                 onSubProjectDeleteInstance={onSubProjectDeleteInstance}
                 selectedProjectId={selectedProjectId}
+                collapsedSubProjectIds={collapsedSubProjectIds}
+                isSubProjectActionPending={isSubProjectActionPending}
                 bindRowRef={bindRowRef}
               />
             </div>

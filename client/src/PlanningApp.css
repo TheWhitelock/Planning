@@ -367,7 +367,7 @@ body {
 
 .schedule-grid tbody th:hover .schedule-activity-head .activity-label,
 .schedule-grid tbody th:focus-within .schedule-activity-head .activity-label {
-  padding-right: 152px;
+  padding-right: 40px;
 }
 
 .new-activity-row th {
@@ -586,7 +586,14 @@ body {
   background: #fff9f1;
   padding-top: 8px;
   padding-bottom: 8px;
+}
+
+.subproject-group-row td {
   border-right: none;
+}
+
+.subproject-group-row th {
+  border-right: 1px solid rgba(164, 118, 76, 0.18);
 }
 
 .subproject-group-row td:last-child {
@@ -594,21 +601,30 @@ body {
 }
 
 .subproject-group-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
   min-width: 0;
   flex: 1 1 auto;
+  width: 100%;
   overflow: hidden;
+  padding-left: 6px;
   padding-right: 10px;
   font-size: 0.84rem;
   letter-spacing: 0.01em;
   color: #694a2f;
+  text-align: left;
 }
 
 .subproject-group-label .activity-name {
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   display: block;
+  text-align: left;
 }
 
 .subproject-group-row .is-weekend {
@@ -619,9 +635,22 @@ body {
   min-width: 0;
 }
 
-.schedule-grid tbody th:hover .subproject-group-label,
-.schedule-grid tbody th:focus-within .subproject-group-label {
-  padding-right: 152px;
+.subproject-group-row th .schedule-activity-head {
+  padding-right: 0;
+}
+
+.schedule-grid tbody .subproject-group-row th:hover .schedule-activity-head,
+.schedule-grid tbody .subproject-group-row th:focus-within .schedule-activity-head {
+  padding-right: 76px;
+}
+
+.subproject-row th .schedule-activity-head {
+  padding-right: 0;
+}
+
+.schedule-grid tbody .subproject-row th:hover .schedule-activity-head,
+.schedule-grid tbody .subproject-row th:focus-within .schedule-activity-head {
+  padding-right: 76px;
 }
 
 .subproject-group-cell-fill {
@@ -637,6 +666,11 @@ body {
 .subproject-row .schedule-row-actions .icon-only-action {
   margin-top: 3px;
   margin-bottom: 3px;
+}
+
+.subproject-collapse-toggle {
+  flex: 0 0 auto;
+  margin-right: 2px;
 }
 
 .row-fade-swap {
@@ -699,6 +733,27 @@ body {
 
 .instance-cell.is-empty {
   opacity: 0;
+}
+
+.activity-day-cell .instance-cell.is-empty {
+  position: absolute;
+  inset: 0;
+  min-height: 0;
+  height: auto;
+  width: auto;
+  margin: 0;
+  border-radius: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.activity-day-cell {
+  position: relative;
+}
+
+.activity-empty-action {
+  gap: 8px;
 }
 
 .instance-cell.is-filled {
@@ -854,6 +909,55 @@ body {
   padding: 7px 8px;
 }
 
+.row-action-menu {
+  position: fixed;
+  z-index: 230;
+  min-width: 220px;
+  background: #fff8ef;
+  border: 1px solid rgba(117, 94, 70, 0.22);
+  border-radius: 10px;
+  box-shadow: 0 16px 28px rgba(24, 20, 15, 0.22);
+  padding: 6px;
+  display: grid;
+  gap: 4px;
+}
+
+.row-action-menu-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: flex-start;
+  background: #fffdf8;
+  color: var(--ink);
+  padding: 7px 8px;
+  border-radius: 8px;
+  box-shadow: none;
+}
+
+.row-action-menu-item:hover {
+  background: #f3eadf;
+}
+
+.row-action-menu-item.is-danger {
+  background: #fff3ef;
+  color: #8d3f1b;
+}
+
+.row-action-menu-item.is-danger:hover {
+  background: #f9e4dc;
+}
+
+.row-action-menu-item:disabled {
+  opacity: 0.5;
+}
+
+.row-action-menu-divider {
+  display: block;
+  height: 1px;
+  margin: 3px 4px;
+  background: rgba(117, 94, 70, 0.24);
+}
+
 .schedule-legend {
   position: absolute;
   right: 10px;
@@ -926,7 +1030,6 @@ body {
 }
 
 .schedule-grid td:hover .instance-cell.is-empty,
-.schedule-grid td:focus-within .instance-cell.is-empty,
 .instance-cell.is-empty:focus-visible {
   opacity: 1;
 }
@@ -1198,6 +1301,59 @@ select:focus-visible {
   padding-right: 4px;
 }
 
+.export-settings-card {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
+  border: 1px solid rgba(164, 118, 76, 0.22);
+  border-radius: 12px;
+  background: #fff9f1;
+}
+
+.export-settings-row {
+  display: grid;
+  gap: 6px;
+  justify-items: start;
+}
+
+.export-settings-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink-soft);
+}
+
+.export-inline-check {
+  display: inline-flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: flex-start;
+  align-self: start;
+  gap: 8px;
+  font-weight: 600;
+  color: var(--ink);
+  cursor: pointer;
+}
+
+.export-inline-check input[type='checkbox'] {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  padding: 0;
+  border-radius: 4px;
+  border: 1px solid rgba(109, 90, 73, 0.45);
+  background: #ffffff;
+  accent-color: var(--accent);
+}
+
+.export-settings-row .mode-toggle,
+.export-settings-row .zoom-toggle {
+  width: fit-content;
+  max-width: 100%;
+}
+
 .export-activity-item {
   display: flex;
   flex-direction: row;
@@ -1300,6 +1456,12 @@ select:focus-visible {
     width: 100%;
     flex-wrap: wrap;
     align-items: stretch;
+  }
+
+  .export-settings-row .zoom-toggle,
+  .export-settings-row .mode-toggle {
+    width: fit-content;
+    align-items: center;
   }
 
   .project-form-row-dates {
