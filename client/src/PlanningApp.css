@@ -400,6 +400,35 @@ body {
   flex-shrink: 0;
 }
 
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(121, 84, 47, 0.55) rgba(244, 231, 214, 0.9);
+}
+
+*::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+*::-webkit-scrollbar-track {
+  background: rgba(244, 231, 214, 0.9);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb {
+  background: linear-gradient(180deg, rgba(148, 104, 61, 0.9), rgba(121, 84, 47, 0.92));
+  border: 2px solid rgba(244, 231, 214, 0.92);
+  border-radius: 999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+  background: linear-gradient(180deg, rgba(131, 92, 55, 0.96), rgba(105, 72, 40, 0.98));
+}
+
+*::-webkit-scrollbar-corner {
+  background: rgba(244, 231, 214, 0.9);
+}
+
 .schedule-scroll {
   --activity-col-width: 250px;
   --month-sticky-left: var(--activity-col-width);
